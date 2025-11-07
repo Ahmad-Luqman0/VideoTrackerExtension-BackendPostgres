@@ -33,7 +33,7 @@ def after_request(response):
 
 
 # Hardcoded database connection string for Vercel deployment
-DATABASE_URL = "postgresql://postgres:luqman.ahmad1@db.nhmrfxrpwjeufaxgukes.supabase.co:5432/postgres"
+DATABASE_URL = "postgresql://postgres.nhmrfxrpwjeufaxgukes:luqman.ahmad1@aws-1-ap-southeast-2.pooler.supabase.com:6543/postgres"
 
 
 def get_conn():
