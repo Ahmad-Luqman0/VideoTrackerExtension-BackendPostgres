@@ -2,38 +2,53 @@ from flask import Flask, request, jsonify
 import psycopg2
 import psycopg2.extras
 from datetime import datetime, timezone
-from flask_cors import CORS
+from flask_cors import CORS, cross_origin
 import re
 import secrets
 
 app = Flask(__name__)
 
-# Configure CORS to allow requests from Chrome extension and handle Private Network Access
+# Configure CORS to allow all origins with all headers
 CORS(
     app,
-    resources={
-        r"/*": {
-            "origins": "*",
-            "allow_headers": ["Content-Type"],
-            "expose_headers": ["*"],
-            "supports_credentials": False,
-        }
-    },
+    resources={r"/*": {"origins": "*"}},
+    allow_headers="*",
+    expose_headers="*",
+    supports_credentials=False,
+    send_wildcard=True,
+    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
 )
 
 
-# Add headers for Chrome Private Network Access
+# Add CORS headers to every response
 @app.after_request
 def after_request(response):
-    response.headers.add("Access-Control-Allow-Origin", "*")
-    response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
-    response.headers.add("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE,OPTIONS")
-    response.headers.add("Access-Control-Allow-Private-Network", "true")
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Private-Network"] = "true"
+    response.headers["Access-Control-Max-Age"] = "3600"
     return response
 
 
+# Handle all OPTIONS requests globally
+@app.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        response = jsonify({"status": "ok"})
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = (
+            "GET, POST, PUT, DELETE, OPTIONS"
+        )
+        response.headers["Access-Control-Max-Age"] = "3600"
+        return response, 200
+
+
 # Hardcoded database connection string for Vercel deployment
-DATABASE_URL = "postgresql://postgres.nhmrfxrpwjeufaxgukes:luqman.ahmad1@aws-1-ap-southeast-2.pooler.supabase.com:6543/postgres"
+# Using Supabase Transaction Pooling for serverless compatibility (port 6543)
+# Transaction mode is recommended for serverless - handles short-lived connections
+DATABASE_URL = "postgresql://postgres.nhmrfxrpwjeufaxgukes:luqman.ahmad1@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres?pgbouncer=true"
 
 
 def get_conn():
