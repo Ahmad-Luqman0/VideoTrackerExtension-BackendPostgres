@@ -48,7 +48,7 @@ def handle_preflight():
 # Hardcoded database connection string for Vercel deployment
 # Using Supabase Transaction Pooling for serverless compatibility (port 6543)
 # Transaction mode is recommended for serverless - handles short-lived connections
-DATABASE_URL = "postgresql://postgres.nhmrfxrpwjeufaxgukes:[YOUR-PASSWORD]@aws-1-ap-southeast-2.pooler.supabase.com:5432/postgres"
+DATABASE_URL = "postgresql://postgres.nhmrfxrpwjeufaxgukes:luqman.ahmad1@aws-1-ap-southeast-2.pooler.supabase.com:5432/postgres"
 
 
 def get_conn():
