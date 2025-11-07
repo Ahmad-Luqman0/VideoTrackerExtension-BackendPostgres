@@ -2,21 +2,42 @@ from flask import Flask, request, jsonify
 import psycopg2
 import psycopg2.extras
 from datetime import datetime, timezone
-import os
 from flask_cors import CORS
 import re
 import secrets
 
 app = Flask(__name__)
-CORS(app)
 
-# Expect DATABASE_URL env var in the form: postgresql://user:pass@host:port/dbname
-DATABASE_URL = os.getenv("DATABASE_URL")
+# Configure CORS to allow requests from Chrome extension and handle Private Network Access
+CORS(
+    app,
+    resources={
+        r"/*": {
+            "origins": "*",
+            "allow_headers": ["Content-Type"],
+            "expose_headers": ["*"],
+            "supports_credentials": False,
+        }
+    },
+)
+
+
+# Add headers for Chrome Private Network Access
+@app.after_request
+def after_request(response):
+    response.headers.add("Access-Control-Allow-Origin", "*")
+    response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
+    response.headers.add("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE,OPTIONS")
+    response.headers.add("Access-Control-Allow-Private-Network", "true")
+    return response
+
+
+# Hardcoded database connection string for Vercel deployment
+DATABASE_URL = "postgresql://postgres:luqman.ahmad1@db.nhmrfxrpwjeufaxgukes.supabase.co:5432/postgres"
 
 
 def get_conn():
-    if not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL environment variable is required")
+    """Create and return a database connection with autocommit enabled"""
     conn = psycopg2.connect(DATABASE_URL)
     conn.autocommit = True  # Enable autocommit to prevent transaction rollback issues
     return conn
@@ -25,24 +46,45 @@ def get_conn():
 def validate_username(username):
     """
     Validate username:
-    - Any characters allowed
-    - Just check it's not empty
+    - 8-15 characters
+    - At least one number
+    - At least one special character (only . - _ allowed)
+    - Only letters, numbers, and .-_ allowed
     """
     if not username:
         return False, "Username is required"
-
+    if not (8 <= len(username) <= 15):
+        return False, "Username must be 8-15 characters long"
+    if not re.search(r"[0-9]", username):
+        return False, "Username must contain at least one number"
+    if not re.search(r"[.\-_]", username):
+        return False, "Username must contain at least one special character (., -, _)"
+    if not re.match(r"^[A-Za-z0-9.\-_]+$", username):
+        return (
+            False,
+            "Username can only contain letters, numbers, period, hyphen, and underscore",
+        )
     return True, "Valid username"
 
 
 def validate_password(password):
     """
     Validate password:
-    - Any characters allowed
-    - Just check it's not empty
+    - At least 8 characters
+    - At least one uppercase letter
+    - At least one number
+    - At least one special character
     """
     if not password:
         return False, "Password is required"
-
+    if len(password) < 8:
+        return False, "Password must be at least 8 characters long"
+    if not re.search(r"[A-Z]", password):
+        return False, "Password must contain at least one uppercase letter"
+    if not re.search(r"[0-9]", password):
+        return False, "Password must contain at least one number"
+    if not re.search(r"[^A-Za-z0-9]", password):
+        return False, "Password must contain at least one special character"
     return True, "Valid password"
 
 
@@ -54,6 +96,17 @@ def generate_session_id():
 @app.route("/", methods=["GET"])
 def home():
     return "BackEnd Running  :)"
+
+
+# Handle OPTIONS preflight requests for CORS
+@app.route("/<path:path>", methods=["OPTIONS"])
+def handle_options(path):
+    response = jsonify({"status": "ok"})
+    response.headers.add("Access-Control-Allow-Origin", "*")
+    response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
+    response.headers.add("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE,OPTIONS")
+    response.headers.add("Access-Control-Allow-Private-Network", "true")
+    return response, 200
 
 
 # --- REGISTER (create new user with duplicate prevention) ---
@@ -200,13 +253,16 @@ def logout():
 # --- LOG VIDEO (merge keys + speeds instead of overwrite, add loopTime) ---
 @app.route("/log_video", methods=["POST"])
 def log_video():
+    print("=" * 80)
+    print("[LOG_VIDEO] REQUEST RECEIVED!")
+    print("=" * 80)
     data = request.json
+    print(f"[LOG_VIDEO] Incoming data: {data}")
     session_id = data.get("session_id")
 
     if not session_id:
+        print("[LOG_VIDEO] ERROR: Missing session_id")
         return jsonify({"success": False, "error": "Missing session_id"}), 400
-
-    # Session ID is now a string, no need to convert to ObjectId
 
     # Handle keys - if null/None, keep as empty list for processing
     keys = data.get("keys")
@@ -228,12 +284,12 @@ def log_video():
     video_id = data.get("videoId")
     duration = float(data.get("duration", 0))
     watched = int(data.get("watched", 0))
-    loop_time = int(data.get("loopTime", 0))  # <-- NEW
+    loop_time = int(data.get("loopTime", 0))
     status = data.get("status", "Not Watched")
 
     try:
         conn = get_conn()
-        cur = conn.cursor()  # Use regular cursor instead of DictCursor
+        cur = conn.cursor()
 
         # confirm session exists
         cur.execute("SELECT id FROM sessions WHERE id = %s", (session_id,))
@@ -248,8 +304,6 @@ def log_video():
         )
 
         # Use UPSERT to avoid race conditions
-        # Track if this is a new video insert or an update
-        # Only update watched/loop_time if new values are greater (accumulate)
         cur.execute(
             """
             INSERT INTO videos (session_id, video_id, duration, watched, loop_time, status, sound_muted)
@@ -303,40 +357,33 @@ def log_video():
                         (vid, k),
                     )
                 except Exception:
-                    # ignore individual key insert errors
                     pass
             # --- RETROACTIVE KEY ASSIGNMENT ---
-            # If any previous videos in this session have NULL key, assign this key to all of them
             try:
-                # Find all previous videos (by id) in this session, excluding current video, with only NULL key(s)
                 cur.execute(
                     "SELECT v.id FROM videos v "
                     "LEFT JOIN video_keys vk ON v.id = vk.video_id "
-                    "WHERE v.session_id = %s AND v.id <> %s "
-                    "GROUP BY v.id "
-                    "HAVING bool_or(vk.key_value IS NULL) AND COUNT(vk.key_value) = 1 ",
+                    "WHERE v.session_id = %s AND v.id <> %s AND vk.key_value IS NULL",
                     (session_id, vid),
                 )
                 prev_rows = cur.fetchall()
                 for prev_row in prev_rows:
                     prev_vid = prev_row[0]
                     for k in keys:
-                        # Remove NULL key if present
                         cur.execute(
                             "DELETE FROM video_keys WHERE video_id = %s AND key_value IS NULL",
                             (prev_vid,),
                         )
-                        # Insert the new key
                         cur.execute(
                             "INSERT INTO video_keys (video_id, key_value) VALUES (%s, %s) ON CONFLICT (video_id, key_value) DO NOTHING",
                             (prev_vid, k),
                         )
             except Exception as e:
-                print(f"[LOG_VIDEO]  Retroactive key assignment failed: {e}")
+                print(f"[LOG_VIDEO] Retroactive key assignment failed: {e}")
 
         # Insert speeds (always insert at least one default speed)
         if not speeds or len(speeds) == 0:
-            speeds = [1.0]  # Default speed
+            speeds = [1.0]
 
         for s in speeds:
             try:
@@ -350,8 +397,7 @@ def log_video():
                     "INSERT INTO video_speeds (video_id, speed_value) VALUES (%s, %s) ON CONFLICT (video_id, speed_value) DO NOTHING",
                     (vid, speed_val),
                 )
-            except Exception as e:
-                # Insert default 1.0 if conversion fails
+            except Exception:
                 try:
                     cur.execute(
                         "INSERT INTO video_speeds (video_id, speed_value) VALUES (%s, %s) ON CONFLICT (video_id, speed_value) DO NOTHING",
@@ -361,7 +407,7 @@ def log_video():
                     pass
 
         conn.commit()
-        print(f"[LOG_VIDEO]  COMMIT SUCCESSFUL for video_id={vid}")
+        print(f"[LOG_VIDEO] COMMIT SUCCESSFUL for video_id={vid}")
 
         cur.close()
         conn.close()
@@ -370,7 +416,7 @@ def log_video():
         try:
             import time
 
-            time.sleep(0.5)  # Wait 500ms for consistency
+            time.sleep(0.5)
             verify_conn = get_conn()
             verification_cur = verify_conn.cursor()
             verification_cur.execute(
@@ -379,14 +425,14 @@ def log_video():
             verify_result = verification_cur.fetchone()
             if verify_result:
                 print(
-                    f"[LOG_VIDEO]  VERIFIED: Video {vid} exists in DB with watched={verify_result[0]}, loop_time={verify_result[1]}"
+                    f"[LOG_VIDEO] VERIFIED: Video {vid} exists in DB with watched={verify_result[0]}, loop_time={verify_result[1]}"
                 )
             else:
-                print(f"[LOG_VIDEO]  ERROR: Video {vid} NOT FOUND after commit!")
+                print(f"[LOG_VIDEO] ERROR: Video {vid} NOT FOUND after commit!")
             verification_cur.close()
             verify_conn.close()
         except Exception as ve:
-            print(f"[LOG_VIDEO]  Verification failed: {ve}")
+            print(f"[LOG_VIDEO] Verification failed: {ve}")
 
         video_entry = {
             "videoId": video_id,
@@ -398,10 +444,10 @@ def log_video():
             "speeds": speeds,
             "soundMuted": sound_muted_status,
         }
-        print(f"[LOG_VIDEO]  FUNCTION COMPLETING SUCCESSFULLY for video_id={vid}")
+        print(f"[LOG_VIDEO] FUNCTION COMPLETING SUCCESSFULLY for video_id={vid}")
         return jsonify({"success": True, "video": video_entry})
     except Exception as e:
-        print(f"[LOG_VIDEO]  EXCEPTION OCCURRED: {str(e)}")
+        print(f"[LOG_VIDEO] EXCEPTION OCCURRED: {str(e)}")
         print(f"[LOG_VIDEO] Exception type: {type(e).__name__}")
         import traceback
 
@@ -427,8 +473,6 @@ def log_inactivity():
     session_id = data.get("session_id")
     if not session_id:
         return jsonify({"success": False, "error": "Missing session_id"}), 400
-
-    # Session ID is now a string, no need to convert to ObjectId
 
     inactivity_entry = {
         "starttime": data.get("starttime"),
