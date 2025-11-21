@@ -1,3 +1,36 @@
+# --- GET USER BY EMAIL (for extension to display username) ---
+@app.route("/get_user_by_email", methods=["GET"])
+def get_user_by_email():
+    email = request.args.get("email")
+    if not email:
+        return jsonify({"success": False, "error": "Email is required"}), 400
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, name, email, usertype_id FROM users WHERE email = %s", (email,)
+        )
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if row:
+            user = {
+                "id": row[0],
+                "name": row[1],
+                "email": row[2],
+                "usertype_id": row[3],
+            }
+            return jsonify({"success": True, "user": user})
+        else:
+            return jsonify({"success": False, "error": "User not found"}), 404
+    except Exception as e:
+        import traceback
+
+        print("[GET_USER_BY_EMAIL] Exception:", str(e))
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 from flask import Flask, request, jsonify
 import psycopg2
 import psycopg2.extras
