@@ -209,19 +209,23 @@ def login():
     data = request.json
     email = data.get("email")
     password = data.get("password")
+    print("[LOGIN] Incoming data:", data)
 
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        print(f"[LOGIN] Executing: SELECT id FROM users WHERE email = %s AND password = %s with email={email}")
         cur.execute(
             "SELECT id FROM users WHERE email = %s AND password = %s",
             (email, password),
         )
         row = cur.fetchone()
+        print(f"[LOGIN] Query result: {row}")
         if not row:
             cur.close()
             conn.close()
-            return jsonify({"success": False}), 401
+            print(f"[LOGIN] Invalid email or password for email={email}")
+            return jsonify({"success": False, "error": "Invalid email or password."}), 401
 
         user_id = row["id"]
         session_id = generate_session_id()
@@ -238,8 +242,12 @@ def login():
         conn.commit()
         cur.close()
         conn.close()
+        print(f"[LOGIN] Success: user_id={user_id}, session_id={session_id}")
         return jsonify({"success": True, "session_id": session_id})
     except Exception as e:
+        import traceback
+        print("[LOGIN] Exception:", str(e))
+        traceback.print_exc()
         return (
             jsonify({"success": False, "error": "Login failed", "detail": str(e)}),
             500,
