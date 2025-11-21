@@ -214,7 +214,9 @@ def login():
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-        print(f"[LOGIN] Executing: SELECT id FROM users WHERE email = %s AND password = %s with email={email}")
+        print(
+            f"[LOGIN] Executing: SELECT id FROM users WHERE email = %s AND password = %s with email={email}"
+        )
         cur.execute(
             "SELECT id FROM users WHERE email = %s AND password = %s",
             (email, password),
@@ -225,7 +227,10 @@ def login():
             cur.close()
             conn.close()
             print(f"[LOGIN] Invalid email or password for email={email}")
-            return jsonify({"success": False, "error": "Invalid email or password."}), 401
+            return (
+                jsonify({"success": False, "error": "Invalid email or password."}),
+                401,
+            )
 
         user_id = row["id"]
         session_id = generate_session_id()
@@ -236,7 +241,7 @@ def login():
         )
         # Log login activity
         cur.execute(
-            "INSERT INTO useractivities (userid, activitytype, timestamp, createdat, updatedat) VALUES (%s, %s, %s, %s, %s)",
+            "INSERT INTO useractivities (userid, activitytype, timestamp, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)",
             (user_id, "login", starttime, starttime, starttime),
         )
         conn.commit()
@@ -246,6 +251,7 @@ def login():
         return jsonify({"success": True, "session_id": session_id})
     except Exception as e:
         import traceback
+
         print("[LOGIN] Exception:", str(e))
         traceback.print_exc()
         return (
@@ -289,7 +295,7 @@ def logout():
         )
         # Log logout activity
         cur.execute(
-            "INSERT INTO useractivities (userid, activitytype, timestamp, createdat, updatedat) VALUES (%s, %s, %s, %s, %s)",
+            "INSERT INTO useractivities (userid, activitytype, timestamp, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)",
             (user_id, "logout", endtime, endtime, endtime),
         )
         conn.commit()
