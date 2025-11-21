@@ -34,7 +34,7 @@ def after_request(response):
 
 DATABASE_URL = (
     os.getenv("DATABASE_URL")
-    or "postgresql://postgres:luqman.ahmad1@db.nhmrfxrpwjeufaxgukes.supabase.co:5432/postgres"
+    or "postgresql://postgres:luqmanahmad1@db.nhmrfxrpwjeufaxgukes.supabase.co:5432/postgres"
 )
 
 
