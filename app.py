@@ -121,6 +121,7 @@ def register():
     password = data.get("password")
     phone = data.get("phone")
     user_type_id = data.get("userTypeId")
+    print("[REGISTER] Incoming data:", data)
 
     # Validate input
     if not name or not email or not password or not user_type_id:
@@ -147,6 +148,7 @@ def register():
         if cur.fetchone():
             cur.close()
             conn.close()
+            print("[REGISTER] Duplicate email:", email)
             return jsonify({"success": False, "error": "Email already exists"}), 409
 
         # Check userTypeId exists
@@ -155,18 +157,28 @@ def register():
         if not user_type_row:
             cur.close()
             conn.close()
+            print("[REGISTER] Invalid userTypeId:", user_type_id)
             return jsonify({"success": False, "error": "Invalid userTypeId"}), 400
 
-        cur.execute(
-            'INSERT INTO "Users" (name, email, password, phone, userTypeId) VALUES (%s, %s, %s, %s, %s) RETURNING id',
-            (name, email, password, phone, user_type_id),
-        )
-        user_id = cur.fetchone()[0]
-        conn.commit()
+        try:
+            cur.execute(
+                'INSERT INTO "Users" (name, email, password, phone, userTypeId) VALUES (%s, %s, %s, %s, %s) RETURNING id',
+                (name, email, password, phone, user_type_id),
+            )
+            user_id = cur.fetchone()[0]
+            conn.commit()
+            print(f"[REGISTER] User created: id={user_id}, email={email}")
+        except Exception as insert_err:
+            print(f"[REGISTER] Insert error: {insert_err}")
+            raise
         cur.close()
         conn.close()
         return jsonify({"success": True, "user_id": user_id})
     except Exception as e:
+        import traceback
+
+        print("[REGISTER] Exception:", str(e))
+        traceback.print_exc()
         return (
             jsonify(
                 {"success": False, "error": "Failed to create user", "detail": str(e)}
