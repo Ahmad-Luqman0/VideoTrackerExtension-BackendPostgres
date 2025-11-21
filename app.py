@@ -1,3 +1,14 @@
+# Email validation helper
+def validate_email(email):
+    if not email:
+        return False, "Email is required"
+    # Simple regex for email validation
+    email_regex = r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"
+    if not re.match(email_regex, email):
+        return False, "Invalid email format"
+    return True, "Valid email"
+
+
 # --- GET USER BY EMAIL (for extension to display username) ---
 @app.route("/get_user_by_email", methods=["GET"])
 def get_user_by_email():
@@ -168,6 +179,11 @@ def register():
             400,
         )
 
+    # Validate email format
+    is_valid, error_msg = validate_email(email)
+    if not is_valid:
+        return jsonify({"success": False, "error": error_msg}), 400
+
     # Validate password format
     is_valid, error_msg = validate_password(password)
     if not is_valid:
@@ -243,6 +259,14 @@ def login():
     email = data.get("email")
     password = data.get("password")
     print("[LOGIN] Incoming data:", data)
+
+    # Validate email format
+    is_valid, error_msg = validate_email(email)
+    if not is_valid:
+        return (
+            jsonify({"success": False, "error": error_msg}),
+            400,
+        )
 
     try:
         conn = get_conn()
