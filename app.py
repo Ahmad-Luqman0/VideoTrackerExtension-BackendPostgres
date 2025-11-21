@@ -120,15 +120,15 @@ def register():
     email = data.get("email")
     password = data.get("password")
     phone = data.get("phone")
-    user_type_name = data.get("userType")  # e.g., 'admin', 'moderator', etc.
+    user_type_id = data.get("userTypeId")
 
     # Validate input
-    if not name or not email or not password or not user_type_name:
+    if not name or not email or not password or not user_type_id:
         return (
             jsonify(
                 {
                     "success": False,
-                    "error": "Name, email, password, and userType are required",
+                    "error": "Name, email, password, and userTypeId are required",
                 }
             ),
             400,
@@ -149,14 +149,13 @@ def register():
             conn.close()
             return jsonify({"success": False, "error": "Email already exists"}), 409
 
-        # Get userTypeId from UserTypes
-        cur.execute('SELECT id FROM "UserTypes" WHERE name = %s', (user_type_name,))
+        # Check userTypeId exists
+        cur.execute('SELECT id FROM "UserTypes" WHERE id = %s', (user_type_id,))
         user_type_row = cur.fetchone()
         if not user_type_row:
             cur.close()
             conn.close()
-            return jsonify({"success": False, "error": "Invalid userType"}), 400
-        user_type_id = user_type_row[0]
+            return jsonify({"success": False, "error": "Invalid userTypeId"}), 400
 
         cur.execute(
             'INSERT INTO "Users" (name, email, password, phone, userTypeId) VALUES (%s, %s, %s, %s, %s) RETURNING id',
@@ -174,6 +173,22 @@ def register():
             ),
             500,
         )
+
+
+# --- GET USER TYPES (for registration dropdown) ---
+@app.route("/usertypes", methods=["GET"])
+def get_usertypes():
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute('SELECT id, name FROM "UserTypes" WHERE active = true')
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        user_types = [{"id": row[0], "name": row[1]} for row in rows]
+        return jsonify({"userTypes": user_types})
+    except Exception as e:
+        return jsonify({"userTypes": [], "error": str(e)}), 500
 
 
 # --- LOGIN (create new session for the user, log to UserActivities) ---
