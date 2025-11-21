@@ -144,7 +144,7 @@ def register():
         conn = get_conn()
         cur = conn.cursor()
         # Check for duplicate email
-        cur.execute('SELECT id FROM "Users" WHERE email = %s', (email,))
+        cur.execute("SELECT id FROM users WHERE email = %s", (email,))
         if cur.fetchone():
             cur.close()
             conn.close()
@@ -152,7 +152,7 @@ def register():
             return jsonify({"success": False, "error": "Email already exists"}), 409
 
         # Check userTypeId exists
-        cur.execute('SELECT id FROM "UserTypes" WHERE id = %s', (user_type_id,))
+        cur.execute("SELECT id FROM usertypes WHERE id = %s", (user_type_id,))
         user_type_row = cur.fetchone()
         if not user_type_row:
             cur.close()
@@ -162,7 +162,7 @@ def register():
 
         try:
             cur.execute(
-                'INSERT INTO "Users" (name, email, password, phone, userTypeId) VALUES (%s, %s, %s, %s, %s) RETURNING id',
+                "INSERT INTO users (name, email, password, phone, usertype_id) VALUES (%s, %s, %s, %s, %s) RETURNING id",
                 (name, email, password, phone, user_type_id),
             )
             user_id = cur.fetchone()[0]
@@ -193,7 +193,7 @@ def get_usertypes():
     try:
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute('SELECT id, name FROM "UserTypes" WHERE active = true')
+        cur.execute("SELECT id, name FROM usertypes WHERE active = true")
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -214,7 +214,7 @@ def login():
         conn = get_conn()
         cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         cur.execute(
-            'SELECT id FROM "Users" WHERE email = %s AND password = %s',
+            "SELECT id FROM users WHERE email = %s AND password = %s",
             (email, password),
         )
         row = cur.fetchone()
@@ -232,7 +232,7 @@ def login():
         )
         # Log login activity
         cur.execute(
-            'INSERT INTO "UserActivities" (userId, activityType, timestamp, createdAt, updatedAt) VALUES (%s, %s, %s, %s, %s)',
+            "INSERT INTO useractivities (userid, activitytype, timestamp, createdat, updatedat) VALUES (%s, %s, %s, %s, %s)",
             (user_id, "login", starttime, starttime, starttime),
         )
         conn.commit()
@@ -281,7 +281,7 @@ def logout():
         )
         # Log logout activity
         cur.execute(
-            'INSERT INTO "UserActivities" (userId, activityType, timestamp, createdAt, updatedAt) VALUES (%s, %s, %s, %s, %s)',
+            "INSERT INTO useractivities (userid, activitytype, timestamp, createdat, updatedat) VALUES (%s, %s, %s, %s, %s)",
             (user_id, "logout", endtime, endtime, endtime),
         )
         conn.commit()
