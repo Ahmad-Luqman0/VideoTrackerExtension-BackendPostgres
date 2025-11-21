@@ -2,56 +2,45 @@ from flask import Flask, request, jsonify
 import psycopg2
 import psycopg2.extras
 from datetime import datetime, timezone
-from flask_cors import CORS, cross_origin
+import os
+from flask_cors import CORS
 import re
 import secrets
 
 app = Flask(__name__)
-
-# Configure CORS to allow all origins with all headers
+# Configure CORS to allow requests from Chrome extension and handle Private Network Access
 CORS(
     app,
-    resources={r"/*": {"origins": "*"}},
-    allow_headers="*",
-    expose_headers="*",
-    supports_credentials=False,
-    send_wildcard=True,
-    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    resources={
+        r"/*": {
+            "origins": "*",
+            "allow_headers": ["Content-Type"],
+            "expose_headers": ["*"],
+            "supports_credentials": False,
+        }
+    },
 )
 
 
-# Add CORS headers to every response
+# Add headers for Chrome Private Network Access
 @app.after_request
 def after_request(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-    response.headers["Access-Control-Allow-Private-Network"] = "true"
-    response.headers["Access-Control-Max-Age"] = "3600"
+    response.headers.add("Access-Control-Allow-Origin", "*")
+    response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
+    response.headers.add("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE,OPTIONS")
+    response.headers.add("Access-Control-Allow-Private-Network", "true")
     return response
 
 
-# Handle all OPTIONS requests globally
-@app.before_request
-def handle_preflight():
-    if request.method == "OPTIONS":
-        response = jsonify({"status": "ok"})
-        response.headers["Access-Control-Allow-Origin"] = "*"
-        response.headers["Access-Control-Allow-Headers"] = "*"
-        response.headers["Access-Control-Allow-Methods"] = (
-            "GET, POST, PUT, DELETE, OPTIONS"
-        )
-        response.headers["Access-Control-Max-Age"] = "3600"
-        return response, 200
-
-
-# Hardcoded database connection string for Vercel deployment
-# Using direct connection with session pooling (port 5432)
-DATABASE_URL = "postgresql://postgres.nhmrfxrpwjeufaxgukes:[YOUR-PASSWORD]@aws-1-ap-southeast-2.pooler.supabase.com:5432/postgres"
+DATABASE_URL = (
+    os.getenv("DATABASE_URL")
+    or "postgresql://postgres.nhmrfxrpwjeufaxgukes:luqmanahmad1@aws-1-ap-southeast-2.pooler.supabase.com:6543/postgres"
+)
 
 
 def get_conn():
-    """Create and return a database connection with autocommit enabled"""
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL environment variable is required")
     conn = psycopg2.connect(DATABASE_URL)
     conn.autocommit = True  # Enable autocommit to prevent transaction rollback issues
     return conn
@@ -102,19 +91,6 @@ def validate_password(password):
     return True, "Valid password"
 
 
-def validate_email(email):
-    """
-    Validate email format using regex
-    """
-    if not email:
-        return False, "Email is required"
-    # Simple regex for email validation
-    email_regex = r"^[\w\.-]+@[\w\.-]+\.\w{2,}$"
-    if not re.match(email_regex, email):
-        return False, "Invalid email format"
-    return True, "Valid email"
-
-
 def generate_session_id():
     """Generate a secure random session ID"""
     return secrets.token_urlsafe(32)
@@ -136,52 +112,73 @@ def handle_options(path):
     return response, 200
 
 
-# --- REGISTER (create new user with duplicate prevention) ---
+# --- REGISTER (create new user with duplicate prevention, UserTypes, and all fields) ---
 @app.route("/register", methods=["POST"])
 def register():
     data = request.json
+    name = data.get("name")
     email = data.get("email")
     password = data.get("password")
-    # Add other fields as needed (e.g., name, userTypeId, etc.)
+    phone = data.get("phone")
+    user_type_id = data.get("userTypeId")
+    print("[REGISTER] Incoming data:", data)
 
     # Validate input
-    if not email or not password:
+    if not name or not email or not password or not user_type_id:
         return (
-            jsonify({"success": False, "error": "Email and password are required"}),
+            jsonify(
+                {
+                    "success": False,
+                    "error": "Name, email, password, and userTypeId are required",
+                }
+            ),
             400,
         )
-
-    # Validate email format
-    is_valid, error_msg = validate_email(email)
-    if not is_valid:
-        return jsonify({"success": False, "error": error_msg}), 400
 
     # Validate password format
     is_valid, error_msg = validate_password(password)
     if not is_valid:
         return jsonify({"success": False, "error": error_msg}), 400
 
-    # Check for duplicate email and insert
     try:
         conn = get_conn()
         cur = conn.cursor()
+        # Check for duplicate email
         cur.execute("SELECT id FROM users WHERE email = %s", (email,))
         if cur.fetchone():
             cur.close()
             conn.close()
+            print("[REGISTER] Duplicate email:", email)
             return jsonify({"success": False, "error": "Email already exists"}), 409
 
-        # Insert user (add other fields as needed)
-        cur.execute(
-            "INSERT INTO users (email, password) VALUES (%s, %s) RETURNING id",
-            (email, password),
-        )
-        user_id = cur.fetchone()[0]
-        conn.commit()
+        # Check userTypeId exists
+        cur.execute("SELECT id FROM usertypes WHERE id = %s", (user_type_id,))
+        user_type_row = cur.fetchone()
+        if not user_type_row:
+            cur.close()
+            conn.close()
+            print("[REGISTER] Invalid userTypeId:", user_type_id)
+            return jsonify({"success": False, "error": "Invalid userTypeId"}), 400
+
+        try:
+            cur.execute(
+                "INSERT INTO users (name, email, password, phone, usertype_id) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                (name, email, password, phone, user_type_id),
+            )
+            user_id = cur.fetchone()[0]
+            conn.commit()
+            print(f"[REGISTER] User created: id={user_id}, email={email}")
+        except Exception as insert_err:
+            print(f"[REGISTER] Insert error: {insert_err}")
+            raise
         cur.close()
         conn.close()
         return jsonify({"success": True, "user_id": user_id})
     except Exception as e:
+        import traceback
+
+        print("[REGISTER] Exception:", str(e))
+        traceback.print_exc()
         return (
             jsonify(
                 {"success": False, "error": "Failed to create user", "detail": str(e)}
@@ -190,37 +187,50 @@ def register():
         )
 
 
-# --- LOGIN (create new session for the user) ---
+# --- GET USER TYPES (for registration dropdown) ---
+@app.route("/usertypes", methods=["GET"])
+def get_usertypes():
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT id, name FROM usertypes WHERE active = true")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        user_types = [{"id": row[0], "name": row[1]} for row in rows]
+        return jsonify({"userTypes": user_types})
+    except Exception as e:
+        return jsonify({"userTypes": [], "error": str(e)}), 500
+
+
+# --- LOGIN (create new session for the user, log to UserActivities) ---
 @app.route("/login", methods=["POST"])
 def login():
     data = request.json
     email = data.get("email")
     password = data.get("password")
-
-    # Validate input
-    if not email or not password:
-        return (
-            jsonify({"success": False, "error": "Email and password are required"}),
-            400,
-        )
-
-    # Validate email format
-    is_valid, error_msg = validate_email(email)
-    if not is_valid:
-        return jsonify({"success": False, "error": error_msg}), 400
+    print("[LOGIN] Incoming data:", data)
 
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        print(
+            f"[LOGIN] Executing: SELECT id FROM users WHERE email = %s AND password = %s with email={email}"
+        )
         cur.execute(
             "SELECT id FROM users WHERE email = %s AND password = %s",
             (email, password),
         )
         row = cur.fetchone()
+        print(f"[LOGIN] Query result: {row}")
         if not row:
             cur.close()
             conn.close()
-            return jsonify({"success": False}), 401
+            print(f"[LOGIN] Invalid email or password for email={email}")
+            return (
+                jsonify({"success": False, "error": "Invalid email or password."}),
+                401,
+            )
 
         user_id = row["id"]
         session_id = generate_session_id()
@@ -229,18 +239,28 @@ def login():
             "INSERT INTO sessions (id, user_id, starttime) VALUES (%s, %s, %s)",
             (session_id, user_id, starttime),
         )
+        # Log login activity
+        cur.execute(
+            "INSERT INTO useractivities (userid, activitytype, timestamp, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)",
+            (user_id, "login", starttime, starttime, starttime),
+        )
         conn.commit()
         cur.close()
         conn.close()
+        print(f"[LOGIN] Success: user_id={user_id}, session_id={session_id}")
         return jsonify({"success": True, "session_id": session_id})
     except Exception as e:
+        import traceback
+
+        print("[LOGIN] Exception:", str(e))
+        traceback.print_exc()
         return (
             jsonify({"success": False, "error": "Login failed", "detail": str(e)}),
             500,
         )
 
 
-# --- LOGOUT (set endtime + duration on last session) ---
+# --- LOGOUT (set endtime + duration on last session, log to UserActivities) ---
 @app.route("/logout", methods=["POST"])
 def logout():
     data = request.json
@@ -252,7 +272,7 @@ def logout():
         conn = get_conn()
         cur = conn.cursor()
         cur.execute(
-            "SELECT starttime, total_videos_watched FROM sessions WHERE id = %s",
+            "SELECT user_id, starttime, total_videos_watched FROM sessions WHERE id = %s",
             (session_id,),
         )
         row = cur.fetchone()
@@ -261,8 +281,9 @@ def logout():
             conn.close()
             return jsonify({"success": False, "error": "Session not found"}), 404
 
-        starttime = row[0]
-        total_videos = row[1]
+        user_id = row[0]
+        starttime = row[1]
+        total_videos = row[2]
         endtime = datetime.now(timezone.utc)
         duration = None
         if starttime:
@@ -271,6 +292,11 @@ def logout():
         cur.execute(
             "UPDATE sessions SET endtime = %s, duration = %s WHERE id = %s",
             (endtime, duration, session_id),
+        )
+        # Log logout activity
+        cur.execute(
+            "INSERT INTO useractivities (userid, activitytype, timestamp, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)",
+            (user_id, "logout", endtime, endtime, endtime),
         )
         conn.commit()
         cur.close()
@@ -305,6 +331,8 @@ def log_video():
         print("[LOG_VIDEO] ERROR: Missing session_id")
         return jsonify({"success": False, "error": "Missing session_id"}), 400
 
+    # Session ID is now a string, no need to convert to ObjectId
+
     # Handle keys - if null/None, keep as empty list for processing
     keys = data.get("keys")
     if keys is None:
@@ -325,12 +353,12 @@ def log_video():
     video_id = data.get("videoId")
     duration = float(data.get("duration", 0))
     watched = int(data.get("watched", 0))
-    loop_time = int(data.get("loopTime", 0))
+    loop_time = int(data.get("loopTime", 0))  # <-- NEW
     status = data.get("status", "Not Watched")
 
     try:
         conn = get_conn()
-        cur = conn.cursor()
+        cur = conn.cursor()  # Use regular cursor instead of DictCursor
 
         # confirm session exists
         cur.execute("SELECT id FROM sessions WHERE id = %s", (session_id,))
@@ -345,6 +373,8 @@ def log_video():
         )
 
         # Use UPSERT to avoid race conditions
+        # Track if this is a new video insert or an update
+        # Only update watched/loop_time if new values are greater (accumulate)
         cur.execute(
             """
             INSERT INTO videos (session_id, video_id, duration, watched, loop_time, status, sound_muted)
@@ -398,8 +428,10 @@ def log_video():
                         (vid, k),
                     )
                 except Exception:
+                    # ignore individual key insert errors
                     pass
             # --- RETROACTIVE KEY ASSIGNMENT ---
+            # Assign this key to all previous videos in this session that have NULL key
             try:
                 cur.execute(
                     "SELECT v.id FROM videos v "
@@ -411,20 +443,22 @@ def log_video():
                 for prev_row in prev_rows:
                     prev_vid = prev_row[0]
                     for k in keys:
+                        # Remove NULL key if present
                         cur.execute(
                             "DELETE FROM video_keys WHERE video_id = %s AND key_value IS NULL",
                             (prev_vid,),
                         )
+                        # Insert the new key
                         cur.execute(
                             "INSERT INTO video_keys (video_id, key_value) VALUES (%s, %s) ON CONFLICT (video_id, key_value) DO NOTHING",
                             (prev_vid, k),
                         )
             except Exception as e:
-                print(f"[LOG_VIDEO] Retroactive key assignment failed: {e}")
+                print(f"[LOG_VIDEO]  Retroactive key assignment failed: {e}")
 
         # Insert speeds (always insert at least one default speed)
         if not speeds or len(speeds) == 0:
-            speeds = [1.0]
+            speeds = [1.0]  # Default speed
 
         for s in speeds:
             try:
@@ -438,7 +472,8 @@ def log_video():
                     "INSERT INTO video_speeds (video_id, speed_value) VALUES (%s, %s) ON CONFLICT (video_id, speed_value) DO NOTHING",
                     (vid, speed_val),
                 )
-            except Exception:
+            except Exception as e:
+                # Insert default 1.0 if conversion fails
                 try:
                     cur.execute(
                         "INSERT INTO video_speeds (video_id, speed_value) VALUES (%s, %s) ON CONFLICT (video_id, speed_value) DO NOTHING",
@@ -448,7 +483,7 @@ def log_video():
                     pass
 
         conn.commit()
-        print(f"[LOG_VIDEO] COMMIT SUCCESSFUL for video_id={vid}")
+        print(f"[LOG_VIDEO]  COMMIT SUCCESSFUL for video_id={vid}")
 
         cur.close()
         conn.close()
@@ -457,7 +492,7 @@ def log_video():
         try:
             import time
 
-            time.sleep(0.5)
+            time.sleep(0.5)  # Wait 500ms for consistency
             verify_conn = get_conn()
             verification_cur = verify_conn.cursor()
             verification_cur.execute(
@@ -466,14 +501,14 @@ def log_video():
             verify_result = verification_cur.fetchone()
             if verify_result:
                 print(
-                    f"[LOG_VIDEO] VERIFIED: Video {vid} exists in DB with watched={verify_result[0]}, loop_time={verify_result[1]}"
+                    f"[LOG_VIDEO]  VERIFIED: Video {vid} exists in DB with watched={verify_result[0]}, loop_time={verify_result[1]}"
                 )
             else:
-                print(f"[LOG_VIDEO] ERROR: Video {vid} NOT FOUND after commit!")
+                print(f"[LOG_VIDEO]  ERROR: Video {vid} NOT FOUND after commit!")
             verification_cur.close()
             verify_conn.close()
         except Exception as ve:
-            print(f"[LOG_VIDEO] Verification failed: {ve}")
+            print(f"[LOG_VIDEO]  Verification failed: {ve}")
 
         video_entry = {
             "videoId": video_id,
@@ -485,10 +520,10 @@ def log_video():
             "speeds": speeds,
             "soundMuted": sound_muted_status,
         }
-        print(f"[LOG_VIDEO] FUNCTION COMPLETING SUCCESSFULLY for video_id={vid}")
+        print(f"[LOG_VIDEO]  FUNCTION COMPLETING SUCCESSFULLY for video_id={vid}")
         return jsonify({"success": True, "video": video_entry})
     except Exception as e:
-        print(f"[LOG_VIDEO] EXCEPTION OCCURRED: {str(e)}")
+        print(f"[LOG_VIDEO]  EXCEPTION OCCURRED: {str(e)}")
         print(f"[LOG_VIDEO] Exception type: {type(e).__name__}")
         import traceback
 
@@ -514,6 +549,8 @@ def log_inactivity():
     session_id = data.get("session_id")
     if not session_id:
         return jsonify({"success": False, "error": "Missing session_id"}), 400
+
+    # Session ID is now a string, no need to convert to ObjectId
 
     inactivity_entry = {
         "starttime": data.get("starttime"),
@@ -592,34 +629,6 @@ def log_inactivity():
             ),
             500,
         )
-
-
-# --- GET USER BY EMAIL (for popup username display) ---
-
-
-@app.route("/get_user_by_email", methods=["GET", "POST"])
-def get_user_by_email():
-    email = request.args.get("email")
-    if not email:
-        return jsonify({"success": False, "error": "Email is required"}), 400
-    try:
-        conn = get_conn()
-        cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-        cur.execute(
-            "SELECT id, email, username, name FROM users WHERE email = %s", (email,)
-        )
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
-        if not row:
-            return jsonify({"success": False, "error": "User not found"}), 404
-        # Prefer 'username', fallback to 'name', fallback to email
-        username = row.get("username") or row.get("name") or row.get("email")
-        return jsonify(
-            {"success": True, "user": {"username": username, "email": row.get("email")}}
-        )
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
 
 
 if __name__ == "__main__":
