@@ -152,7 +152,7 @@ def register():
             return jsonify({"success": False, "error": "Email already exists"}), 409
 
         # Check userTypeId exists
-        cur.execute("SELECT id FROM UserTypes WHERE id = %s", (user_type_id,))
+        cur.execute("SELECT id FROM usertypes WHERE id = %s", (user_type_id,))
         user_type_row = cur.fetchone()
         if not user_type_row:
             cur.close()
@@ -193,7 +193,7 @@ def get_usertypes():
     try:
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("SELECT id, name FROM UserTypes WHERE active = true")
+        cur.execute("SELECT id, name FROM usertypes WHERE active = true")
         rows = cur.fetchall()
         cur.close()
         conn.close()
