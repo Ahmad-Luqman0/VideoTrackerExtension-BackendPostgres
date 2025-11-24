@@ -636,6 +636,7 @@ def log_inactivity():
 @app.route("/queues", methods=["POST"])
 def create_queue():
     data = request.json or {}
+    print("[QUEUES] Incoming payload:", data)
     # Require session_id to link queue to a session
     session_id = data.get("session_id")
     name = data.get("name")
@@ -646,6 +647,7 @@ def create_queue():
     subqueue_counts = data.get("subqueue_counts", {})
 
     if not session_id or not name:
+        print("[QUEUES] Missing session_id or queue name")
         return (
             jsonify({"success": False, "error": "Missing session_id or queue name"}),
             400,
@@ -657,6 +659,7 @@ def create_queue():
         # Ensure session exists
         cur.execute("SELECT id FROM sessions WHERE id = %s", (session_id,))
         if not cur.fetchone():
+            print(f"[QUEUES] Session not found for session_id={session_id}")
             cur.close()
             conn.close()
             return jsonify({"success": False, "error": "Session not found"}), 404
@@ -671,33 +674,48 @@ def create_queue():
                     pass
             subqueue_counts = obj
 
-        cur.execute(
-            """
-            INSERT INTO queues (name, session_id, main_queue, main_queue_count, subqueues, subqueue_counts)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (session_id, name) DO UPDATE SET
-                main_queue = EXCLUDED.main_queue,
-                main_queue_count = GREATEST(queues.main_queue_count, EXCLUDED.main_queue_count),
-                subqueues = EXCLUDED.subqueues,
-                subqueue_counts = EXCLUDED.subqueue_counts,
-                updated_at = NOW()
-            RETURNING id
-            """,
-            (
-                name,
-                session_id,
-                main_queue,
-                main_queue_count,
-                json.dumps(subqueues),
-                json.dumps(subqueue_counts),
-            ),
+        print(
+            f"[QUEUES] Inserting queue: name={name}, session_id={session_id}, main_queue={main_queue}, main_queue_count={main_queue_count}, subqueues={subqueues}, subqueue_counts={subqueue_counts}"
         )
-        queue_id = cur.fetchone()[0]
-        conn.commit()
-        cur.close()
-        conn.close()
-        return jsonify({"success": True, "queue_id": queue_id, "name": name})
+        try:
+            cur.execute(
+                """
+                INSERT INTO queues (name, session_id, main_queue, main_queue_count, subqueues, subqueue_counts)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (session_id, name) DO UPDATE SET
+                    main_queue = EXCLUDED.main_queue,
+                    main_queue_count = GREATEST(queues.main_queue_count, EXCLUDED.main_queue_count),
+                    subqueues = EXCLUDED.subqueues,
+                    subqueue_counts = EXCLUDED.subqueue_counts,
+                    updated_at = NOW()
+                RETURNING id
+                """,
+                (
+                    name,
+                    session_id,
+                    main_queue,
+                    main_queue_count,
+                    json.dumps(subqueues),
+                    json.dumps(subqueue_counts),
+                ),
+            )
+            queue_id = cur.fetchone()[0]
+            conn.commit()
+            print(f"[QUEUES] Queue inserted/updated: id={queue_id}")
+            cur.close()
+            conn.close()
+            return jsonify({"success": True, "queue_id": queue_id, "name": name})
+        except Exception as e:
+            print(f"[QUEUES] Exception during insert/update: {e}")
+            import traceback
+
+            traceback.print_exc()
+            raise
     except Exception as e:
+        print(f"[QUEUES] Outer exception: {e}")
+        import traceback
+
+        traceback.print_exc()
         return (
             jsonify(
                 {"success": False, "error": "Failed to create queue", "detail": str(e)}
