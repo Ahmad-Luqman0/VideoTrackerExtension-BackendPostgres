@@ -727,24 +727,25 @@ def create_queue():
 @app.route("/queues", methods=["GET"])
 def list_queues():
     try:
+        print("[QUEUES][DEBUG] Incoming GET /queues request")
+        print(f"[QUEUES][DEBUG] Query params: {request.args}")
         conn = get_conn()
         cur = conn.cursor()
-        # Allow optional filtering by session_id
         session_id = request.args.get("session_id")
         if session_id:
-            cur.execute(
-                "SELECT id, name, session_id, main_queue, main_queue_count, subqueues, subqueue_counts, active, created_at FROM queues WHERE session_id = %s ORDER BY id DESC",
-                (session_id,),
-            )
+            print(f"[QUEUES][DEBUG] Filtering by session_id: {session_id}")
+            sql = "SELECT id, name, session_id, main_queue, main_queue_count, subqueues, subqueue_counts, active, created_at FROM queues WHERE session_id = %s ORDER BY id DESC"
+            print(f"[QUEUES][DEBUG] SQL: {sql}")
+            cur.execute(sql, (session_id,))
         else:
-            cur.execute(
-                "SELECT id, name, session_id, main_queue, main_queue_count, subqueues, subqueue_counts, active, created_at FROM queues ORDER BY id DESC"
-            )
+            sql = "SELECT id, name, session_id, main_queue, main_queue_count, subqueues, subqueue_counts, active, created_at FROM queues ORDER BY id DESC"
+            print(f"[QUEUES][DEBUG] SQL: {sql}")
+            cur.execute(sql)
         rows = cur.fetchall()
-        cur.close()
-        conn.close()
+        print(f"[QUEUES][DEBUG] Rows fetched: {len(rows)}")
         queues = []
         for r in rows:
+            print(f"[QUEUES][DEBUG] Row: {r}")
             queues.append(
                 {
                     "id": r[0],
@@ -758,8 +759,15 @@ def list_queues():
                     "created_at": r[8].isoformat() if r[8] else None,
                 }
             )
+        cur.close()
+        conn.close()
+        print(f"[QUEUES][DEBUG] Returning {len(queues)} queues")
         return jsonify({"success": True, "queues": queues})
     except Exception as e:
+        import traceback
+
+        print(f"[QUEUES][ERROR] Exception: {e}")
+        traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
 
 
@@ -807,6 +815,7 @@ def _adjust_queue_counts(cur, queue_id, metadata, delta=1):
 @app.route("/cards", methods=["POST"])
 def add_card():
     data = request.json or {}
+    print("[CARDS] Incoming payload:", data)
     session_id = data.get("session_id")
     card_id = data.get("card_id")
     status = data.get("status")
@@ -814,6 +823,7 @@ def add_card():
     metadata = data.get("metadata")
 
     if not session_id or not card_id or not status or not queue_id:
+        print("[CARDS] Missing required fields")
         return (
             jsonify(
                 {
@@ -825,6 +835,7 @@ def add_card():
         )
 
     if status not in ("accept", "reject"):
+        print(f"[CARDS] Invalid status value: {status}")
         return jsonify({"success": False, "error": "Invalid status value"}), 400
 
     try:
@@ -834,6 +845,7 @@ def add_card():
         # ensure session exists
         cur.execute("SELECT id FROM sessions WHERE id = %s", (session_id,))
         if not cur.fetchone():
+            print(f"[CARDS] Session not found for session_id={session_id}")
             cur.close()
             conn.close()
             return jsonify({"success": False, "error": "Session not found"}), 404
@@ -844,6 +856,9 @@ def add_card():
             (queue_id, session_id),
         )
         if not cur.fetchone():
+            print(
+                f"[CARDS] Queue not found for queue_id={queue_id} session_id={session_id}"
+            )
             cur.close()
             conn.close()
             return (
@@ -904,10 +919,15 @@ def add_card():
             _adjust_queue_counts(cur, queue_id, metadata, delta=1)
 
         conn.commit()
+        print(f"[CARDS] Card inserted/updated: id={card_db_id}")
         cur.close()
         conn.close()
         return jsonify({"success": True, "card_id": card_db_id})
     except Exception as e:
+        print(f"[CARDS] Exception: {e}")
+        import traceback
+
+        traceback.print_exc()
         return (
             jsonify(
                 {"success": False, "error": "Failed to add card", "detail": str(e)}
