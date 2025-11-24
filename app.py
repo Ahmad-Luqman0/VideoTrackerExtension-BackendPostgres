@@ -746,6 +746,25 @@ def list_queues():
         queues = []
         for r in rows:
             print(f"[QUEUES][DEBUG] Row: {r}")
+            # Fix: Only json.loads if value is a string
+            subqueues_val = r[5]
+            if isinstance(subqueues_val, str):
+                try:
+                    subqueues_val = json.loads(subqueues_val)
+                except Exception:
+                    subqueues_val = []
+            elif not isinstance(subqueues_val, list):
+                subqueues_val = []
+
+            subqueue_counts_val = r[6]
+            if isinstance(subqueue_counts_val, str):
+                try:
+                    subqueue_counts_val = json.loads(subqueue_counts_val)
+                except Exception:
+                    subqueue_counts_val = {}
+            elif not isinstance(subqueue_counts_val, dict):
+                subqueue_counts_val = {}
+
             queues.append(
                 {
                     "id": r[0],
@@ -753,8 +772,8 @@ def list_queues():
                     "session_id": r[2],
                     "main_queue": r[3],
                     "main_queue_count": r[4],
-                    "subqueues": json.loads(r[5]) if r[5] else [],
-                    "subqueue_counts": json.loads(r[6]) if r[6] else {},
+                    "subqueues": subqueues_val,
+                    "subqueue_counts": subqueue_counts_val,
                     "active": r[7],
                     "created_at": r[8].isoformat() if r[8] else None,
                 }
