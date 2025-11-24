@@ -6,6 +6,7 @@ import os
 from flask_cors import CORS
 import re
 import secrets
+import json
 
 app = Flask(__name__)
 # Configure CORS to allow requests from Chrome extension and handle Private Network Access
@@ -626,6 +627,388 @@ def log_inactivity():
                     "error": "Failed to log inactivity",
                     "detail": str(e),
                 }
+            ),
+            500,
+        )
+
+
+# --- QUEUES API ---
+@app.route("/queues", methods=["POST"])
+def create_queue():
+    data = request.json or {}
+    # Require session_id to link queue to a session
+    session_id = data.get("session_id")
+    name = data.get("name")
+    main_queue = data.get("main_queue")
+    main_queue_count = int(data.get("main_queue_count", 0) or 0)
+    subqueues = data.get("subqueues", [])
+    # subqueue_counts can be object or list of {name,count}
+    subqueue_counts = data.get("subqueue_counts", {})
+
+    if not session_id or not name:
+        return (
+            jsonify({"success": False, "error": "Missing session_id or queue name"}),
+            400,
+        )
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        # Ensure session exists
+        cur.execute("SELECT id FROM sessions WHERE id = %s", (session_id,))
+        if not cur.fetchone():
+            cur.close()
+            conn.close()
+            return jsonify({"success": False, "error": "Session not found"}), 404
+
+        # Normalize subqueue_counts to JSON object
+        if isinstance(subqueue_counts, list):
+            obj = {}
+            for item in subqueue_counts:
+                try:
+                    obj[item.get("name")] = int(item.get("count", 0) or 0)
+                except Exception:
+                    pass
+            subqueue_counts = obj
+
+        cur.execute(
+            """
+            INSERT INTO queues (name, session_id, main_queue, main_queue_count, subqueues, subqueue_counts)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (session_id, name) DO UPDATE SET
+                main_queue = EXCLUDED.main_queue,
+                main_queue_count = GREATEST(queues.main_queue_count, EXCLUDED.main_queue_count),
+                subqueues = EXCLUDED.subqueues,
+                subqueue_counts = EXCLUDED.subqueue_counts,
+                updated_at = NOW()
+            RETURNING id
+            """,
+            (
+                name,
+                session_id,
+                main_queue,
+                main_queue_count,
+                json.dumps(subqueues),
+                json.dumps(subqueue_counts),
+            ),
+        )
+        queue_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"success": True, "queue_id": queue_id, "name": name})
+    except Exception as e:
+        return (
+            jsonify(
+                {"success": False, "error": "Failed to create queue", "detail": str(e)}
+            ),
+            500,
+        )
+
+
+@app.route("/queues", methods=["GET"])
+def list_queues():
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        # Allow optional filtering by session_id
+        session_id = request.args.get("session_id")
+        if session_id:
+            cur.execute(
+                "SELECT id, name, session_id, main_queue, main_queue_count, subqueues, subqueue_counts, active, created_at FROM queues WHERE session_id = %s ORDER BY id DESC",
+                (session_id,),
+            )
+        else:
+            cur.execute(
+                "SELECT id, name, session_id, main_queue, main_queue_count, subqueues, subqueue_counts, active, created_at FROM queues ORDER BY id DESC"
+            )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        queues = []
+        for r in rows:
+            queues.append(
+                {
+                    "id": r[0],
+                    "name": r[1],
+                    "session_id": r[2],
+                    "main_queue": r[3],
+                    "main_queue_count": r[4],
+                    "subqueues": json.loads(r[5]) if r[5] else [],
+                    "subqueue_counts": json.loads(r[6]) if r[6] else {},
+                    "active": r[7],
+                    "created_at": r[8].isoformat() if r[8] else None,
+                }
+            )
+        return jsonify({"success": True, "queues": queues})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# --- CARDS API ---
+def _adjust_queue_counts(cur, queue_id, metadata, delta=1):
+    """Adjust main_queue_count and subqueue_counts for a queue by delta (+1 or -1)."""
+    if queue_id is None:
+        return
+    # Lock queue row
+    cur.execute(
+        "SELECT main_queue_count, subqueue_counts FROM queues WHERE id = %s FOR UPDATE",
+        (queue_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return
+    main_count = row[0] or 0
+    sub_counts_json = row[1]
+    try:
+        sub_counts = json.loads(sub_counts_json) if sub_counts_json else {}
+    except Exception:
+        sub_counts = {}
+
+    main_count = max(0, int(main_count) + int(delta))
+
+    # If metadata contains explicit subqueue name, adjust that count
+    if metadata and isinstance(metadata, dict):
+        subname = (
+            metadata.get("subqueue") or metadata.get("sub_queue") or metadata.get("sub")
+        )
+        if subname:
+            try:
+                current = int(sub_counts.get(subname, 0) or 0)
+            except Exception:
+                current = 0
+            current = max(0, current + int(delta))
+            sub_counts[subname] = current
+
+    cur.execute(
+        "UPDATE queues SET main_queue_count = %s, subqueue_counts = %s, updated_at = NOW() WHERE id = %s",
+        (main_count, json.dumps(sub_counts), queue_id),
+    )
+
+
+@app.route("/cards", methods=["POST"])
+def add_card():
+    data = request.json or {}
+    session_id = data.get("session_id")
+    card_id = data.get("card_id")
+    status = data.get("status")
+    queue_id = data.get("queue_id")
+    metadata = data.get("metadata")
+
+    if not session_id or not card_id or not status or not queue_id:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "session_id, card_id, status and queue_id are required",
+                }
+            ),
+            400,
+        )
+
+    if status not in ("accept", "reject"):
+        return jsonify({"success": False, "error": "Invalid status value"}), 400
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+
+        # ensure session exists
+        cur.execute("SELECT id FROM sessions WHERE id = %s", (session_id,))
+        if not cur.fetchone():
+            cur.close()
+            conn.close()
+            return jsonify({"success": False, "error": "Session not found"}), 404
+
+        # ensure queue exists and belongs to session
+        cur.execute(
+            "SELECT id FROM queues WHERE id = %s AND session_id = %s",
+            (queue_id, session_id),
+        )
+        if not cur.fetchone():
+            cur.close()
+            conn.close()
+            return (
+                jsonify(
+                    {"success": False, "error": "Queue not found for this session"}
+                ),
+                404,
+            )
+
+        # check existing card
+        cur.execute(
+            "SELECT id, queue_id, metadata FROM cards WHERE session_id = %s AND card_id = %s",
+            (session_id, card_id),
+        )
+        existing = cur.fetchone()
+
+        if existing:
+            existing_id = existing[0]
+            old_queue_id = existing[1]
+            old_metadata_json = existing[2]
+            old_metadata = None
+            try:
+                old_metadata = (
+                    json.loads(old_metadata_json) if old_metadata_json else None
+                )
+            except Exception:
+                old_metadata = None
+
+            cur.execute(
+                "UPDATE cards SET status = %s, queue_id = %s, metadata = %s, updated_at = NOW() WHERE id = %s RETURNING id",
+                (
+                    status,
+                    queue_id,
+                    json.dumps(metadata) if metadata is not None else None,
+                    existing_id,
+                ),
+            )
+            card_db_id = cur.fetchone()[0]
+
+            # If queue changed, adjust counts
+            if old_queue_id != queue_id:
+                _adjust_queue_counts(cur, old_queue_id, old_metadata, delta=-1)
+                _adjust_queue_counts(cur, queue_id, metadata, delta=1)
+
+        else:
+            cur.execute(
+                "INSERT INTO cards (session_id, card_id, status, queue_id, metadata) VALUES (%s,%s,%s,%s,%s) RETURNING id",
+                (
+                    session_id,
+                    card_id,
+                    status,
+                    queue_id,
+                    json.dumps(metadata) if metadata is not None else None,
+                ),
+            )
+            card_db_id = cur.fetchone()[0]
+            # New card -> increment queue counts
+            _adjust_queue_counts(cur, queue_id, metadata, delta=1)
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"success": True, "card_id": card_db_id})
+    except Exception as e:
+        return (
+            jsonify(
+                {"success": False, "error": "Failed to add card", "detail": str(e)}
+            ),
+            500,
+        )
+
+
+@app.route("/cards/bulk", methods=["POST"])
+def add_cards_bulk():
+    data = request.json or {}
+    cards = data.get("cards")
+    if not cards or not isinstance(cards, list):
+        return jsonify({"success": False, "error": "cards list required"}), 400
+
+    results = []
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        for c in cards:
+            session_id = c.get("session_id")
+            card_id = c.get("card_id")
+            status = c.get("status")
+            queue_id = c.get("queue_id")
+            metadata = c.get("metadata")
+
+            if not session_id or not card_id or not status or not queue_id:
+                results.append(
+                    {"card_id": card_id, "success": False, "error": "missing fields"}
+                )
+                continue
+
+            try:
+                # ensure session and queue exist
+                cur.execute("SELECT id FROM sessions WHERE id = %s", (session_id,))
+                if not cur.fetchone():
+                    results.append(
+                        {
+                            "card_id": card_id,
+                            "success": False,
+                            "error": "session not found",
+                        }
+                    )
+                    continue
+                cur.execute(
+                    "SELECT id FROM queues WHERE id = %s AND session_id = %s",
+                    (queue_id, session_id),
+                )
+                if not cur.fetchone():
+                    results.append(
+                        {
+                            "card_id": card_id,
+                            "success": False,
+                            "error": "queue not found for session",
+                        }
+                    )
+                    continue
+
+                # check existing
+                cur.execute(
+                    "SELECT id, queue_id, metadata FROM cards WHERE session_id = %s AND card_id = %s",
+                    (session_id, card_id),
+                )
+                existing = cur.fetchone()
+                if existing:
+                    eid = existing[0]
+                    old_queue_id = existing[1]
+                    old_metadata_json = existing[2]
+                    old_metadata = None
+                    try:
+                        old_metadata = (
+                            json.loads(old_metadata_json) if old_metadata_json else None
+                        )
+                    except Exception:
+                        old_metadata = None
+
+                    cur.execute(
+                        "UPDATE cards SET status = %s, queue_id = %s, metadata = %s, updated_at = NOW() WHERE id = %s RETURNING id",
+                        (
+                            status,
+                            queue_id,
+                            json.dumps(metadata) if metadata is not None else None,
+                            eid,
+                        ),
+                    )
+                    cid = cur.fetchone()[0]
+                    if old_queue_id != queue_id:
+                        _adjust_queue_counts(cur, old_queue_id, old_metadata, delta=-1)
+                        _adjust_queue_counts(cur, queue_id, metadata, delta=1)
+                    results.append(
+                        {"card_id": card_id, "success": True, "card_db_id": cid}
+                    )
+                else:
+                    cur.execute(
+                        "INSERT INTO cards (session_id, card_id, status, queue_id, metadata) VALUES (%s,%s,%s,%s,%s) RETURNING id",
+                        (
+                            session_id,
+                            card_id,
+                            status,
+                            queue_id,
+                            json.dumps(metadata) if metadata is not None else None,
+                        ),
+                    )
+                    cid = cur.fetchone()[0]
+                    _adjust_queue_counts(cur, queue_id, metadata, delta=1)
+                    results.append(
+                        {"card_id": card_id, "success": True, "card_db_id": cid}
+                    )
+            except Exception as e:
+                results.append({"card_id": card_id, "success": False, "error": str(e)})
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"success": True, "results": results})
+    except Exception as e:
+        return (
+            jsonify(
+                {"success": False, "error": "Bulk insert failed", "detail": str(e)}
             ),
             500,
         )
