@@ -42,15 +42,9 @@ DATABASE_URL = (
 def get_conn():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL environment variable is required")
-    try:
-        conn = psycopg2.connect(DATABASE_URL)
-        conn.autocommit = (
-            True  # Enable autocommit to prevent transaction rollback issues
-        )
-        return conn
-    except Exception as e:
-        print(f"[DB] Connection error: {e}")
-        raise
+    conn = psycopg2.connect(DATABASE_URL)
+    conn.autocommit = True  # Enable autocommit to prevent transaction rollback issues
+    return conn
 
 
 def validate_username(username):
@@ -122,15 +116,13 @@ def handle_options(path):
 # --- REGISTER (create new user with duplicate prevention, UserTypes, and all fields) ---
 @app.route("/register", methods=["POST"])
 def register():
-    data = request.json or {}
+    data = request.json
     name = data.get("name")
     email = data.get("email")
     password = data.get("password")
     phone = data.get("phone")
     user_type_id = data.get("userTypeId")
-    print(
-        "[REGISTER] Incoming data:", {k: v for k, v in data.items() if k != "password"}
-    )
+    print("[REGISTER] Incoming data:", data)
 
     # Validate input
     if not name or not email or not password or not user_type_id:
@@ -149,15 +141,14 @@ def register():
     if not is_valid:
         return jsonify({"success": False, "error": error_msg}), 400
 
-    conn = None
-    cur = None
     try:
         conn = get_conn()
         cur = conn.cursor()
-
         # Check for duplicate email
         cur.execute("SELECT id FROM users WHERE email = %s", (email,))
         if cur.fetchone():
+            cur.close()
+            conn.close()
             print("[REGISTER] Duplicate email:", email)
             return jsonify({"success": False, "error": "Email already exists"}), 409
 
@@ -165,45 +156,36 @@ def register():
         cur.execute("SELECT id FROM usertypes WHERE id = %s", (user_type_id,))
         user_type_row = cur.fetchone()
         if not user_type_row:
+            cur.close()
+            conn.close()
             print("[REGISTER] Invalid userTypeId:", user_type_id)
             return jsonify({"success": False, "error": "Invalid userTypeId"}), 400
 
-        # Insert user
-        cur.execute(
-            "INSERT INTO users (name, email, password, phone, usertype_id) VALUES (%s, %s, %s, %s, %s) RETURNING id",
-            (name, email, password, phone, user_type_id),
-        )
-        user_id = cur.fetchone()[0]
-        conn.commit()
-        print(f"[REGISTER] User created: id={user_id}, email={email}")
+        try:
+            cur.execute(
+                "INSERT INTO users (name, email, password, phone, usertype_id) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                (name, email, password, phone, user_type_id),
+            )
+            user_id = cur.fetchone()[0]
+            conn.commit()
+            print(f"[REGISTER] User created: id={user_id}, email={email}")
+        except Exception as insert_err:
+            print(f"[REGISTER] Insert error: {insert_err}")
+            raise
+        cur.close()
+        conn.close()
         return jsonify({"success": True, "user_id": user_id})
     except Exception as e:
         import traceback
 
         print("[REGISTER] Exception:", str(e))
         traceback.print_exc()
-        if conn:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
         return (
             jsonify(
                 {"success": False, "error": "Failed to create user", "detail": str(e)}
             ),
             500,
         )
-    finally:
-        if cur:
-            try:
-                cur.close()
-            except Exception:
-                pass
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
 
 # --- GET USER TYPES (for registration dropdown) ---
@@ -230,8 +212,6 @@ def login():
     password = data.get("password")
     print("[LOGIN] Incoming data:", data)
 
-    conn = None
-    cur = None
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
@@ -245,6 +225,8 @@ def login():
         row = cur.fetchone()
         print(f"[LOGIN] Query result: {row}")
         if not row:
+            cur.close()
+            conn.close()
             print(f"[LOGIN] Invalid email or password for email={email}")
             return (
                 jsonify({"success": False, "error": "Invalid email or password."}),
@@ -264,6 +246,8 @@ def login():
             (user_id, "login", starttime, starttime, starttime),
         )
         conn.commit()
+        cur.close()
+        conn.close()
         print(f"[LOGIN] Success: user_id={user_id}, session_id={session_id}")
         return jsonify({"success": True, "session_id": session_id})
     except Exception as e:
@@ -271,26 +255,10 @@ def login():
 
         print("[LOGIN] Exception:", str(e))
         traceback.print_exc()
-        if conn:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
         return (
             jsonify({"success": False, "error": "Login failed", "detail": str(e)}),
             500,
         )
-    finally:
-        if cur:
-            try:
-                cur.close()
-            except Exception:
-                pass
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
 
 # --- LOGOUT (set endtime + duration on last session, log to UserActivities) ---
@@ -842,25 +810,7 @@ def _adjust_queue_counts(cur, queue_id, metadata, delta=1):
     except Exception:
         sub_counts = {}
 
-    # Save old counts before update
-    cur.execute(
-        "SELECT queue_count_new, queue_count_old, subqueue_count_new, subqueue_count_old, selected_subqueue FROM queues WHERE id = %s",
-        (queue_id,),
-    )
-    old_row = cur.fetchone()
-    old_queue_count_new = old_row[0] if old_row else 0
-    old_queue_count_old = old_row[1] if old_row else 0
-    old_subqueue_count_new = old_row[2] if old_row else 0
-    old_subqueue_count_old = old_row[3] if old_row else 0
-    old_selected_subqueue = old_row[4] if old_row else None
-
     main_count = max(0, int(main_count) + int(delta))
-    queue_count_old = old_queue_count_new
-    queue_count_new = main_count
-
-    subqueue_count_old = old_subqueue_count_new
-    subqueue_count_new = subqueue_count_old
-    selected_subqueue = old_selected_subqueue
 
     # If metadata contains explicit subqueue name, adjust that count
     if metadata and isinstance(metadata, dict):
@@ -868,28 +818,16 @@ def _adjust_queue_counts(cur, queue_id, metadata, delta=1):
             metadata.get("subqueue") or metadata.get("sub_queue") or metadata.get("sub")
         )
         if subname:
-            selected_subqueue = subname
             try:
                 current = int(sub_counts.get(subname, 0) or 0)
             except Exception:
                 current = 0
-            subqueue_count_old = current
             current = max(0, current + int(delta))
             sub_counts[subname] = current
-            subqueue_count_new = current
 
     cur.execute(
-        "UPDATE queues SET main_queue_count = %s, subqueue_counts = %s, updated_at = NOW(), queue_count_new = %s, queue_count_old = %s, subqueue_count_new = %s, subqueue_count_old = %s, selected_subqueue = %s WHERE id = %s",
-        (
-            main_count,
-            json.dumps(sub_counts),
-            queue_count_new,
-            queue_count_old,
-            subqueue_count_new,
-            subqueue_count_old,
-            selected_subqueue,
-            queue_id,
-        ),
+        "UPDATE queues SET main_queue_count = %s, subqueue_counts = %s, updated_at = NOW() WHERE id = %s",
+        (main_count, json.dumps(sub_counts), queue_id),
     )
 
 
