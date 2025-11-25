@@ -810,7 +810,25 @@ def _adjust_queue_counts(cur, queue_id, metadata, delta=1):
     except Exception:
         sub_counts = {}
 
+    # Save old counts before update
+    cur.execute(
+        "SELECT queue_count_new, queue_count_old, subqueue_count_new, subqueue_count_old, selected_subqueue FROM queues WHERE id = %s",
+        (queue_id,),
+    )
+    old_row = cur.fetchone()
+    old_queue_count_new = old_row[0] if old_row else 0
+    old_queue_count_old = old_row[1] if old_row else 0
+    old_subqueue_count_new = old_row[2] if old_row else 0
+    old_subqueue_count_old = old_row[3] if old_row else 0
+    old_selected_subqueue = old_row[4] if old_row else None
+
     main_count = max(0, int(main_count) + int(delta))
+    queue_count_old = old_queue_count_new
+    queue_count_new = main_count
+
+    subqueue_count_old = old_subqueue_count_new
+    subqueue_count_new = subqueue_count_old
+    selected_subqueue = old_selected_subqueue
 
     # If metadata contains explicit subqueue name, adjust that count
     if metadata and isinstance(metadata, dict):
@@ -818,16 +836,28 @@ def _adjust_queue_counts(cur, queue_id, metadata, delta=1):
             metadata.get("subqueue") or metadata.get("sub_queue") or metadata.get("sub")
         )
         if subname:
+            selected_subqueue = subname
             try:
                 current = int(sub_counts.get(subname, 0) or 0)
             except Exception:
                 current = 0
+            subqueue_count_old = current
             current = max(0, current + int(delta))
             sub_counts[subname] = current
+            subqueue_count_new = current
 
     cur.execute(
-        "UPDATE queues SET main_queue_count = %s, subqueue_counts = %s, updated_at = NOW() WHERE id = %s",
-        (main_count, json.dumps(sub_counts), queue_id),
+        "UPDATE queues SET main_queue_count = %s, subqueue_counts = %s, updated_at = NOW(), queue_count_new = %s, queue_count_old = %s, subqueue_count_new = %s, subqueue_count_old = %s, selected_subqueue = %s WHERE id = %s",
+        (
+            main_count,
+            json.dumps(sub_counts),
+            queue_count_new,
+            queue_count_old,
+            subqueue_count_new,
+            subqueue_count_old,
+            selected_subqueue,
+            queue_id,
+        ),
     )
 
 
