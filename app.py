@@ -42,9 +42,15 @@ DATABASE_URL = (
 def get_conn():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL environment variable is required")
-    conn = psycopg2.connect(DATABASE_URL)
-    conn.autocommit = True  # Enable autocommit to prevent transaction rollback issues
-    return conn
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        conn.autocommit = (
+            True  # Enable autocommit to prevent transaction rollback issues
+        )
+        return conn
+    except Exception as e:
+        print(f"[DB] Connection error: {e}")
+        raise
 
 
 def validate_username(username):
@@ -116,13 +122,15 @@ def handle_options(path):
 # --- REGISTER (create new user with duplicate prevention, UserTypes, and all fields) ---
 @app.route("/register", methods=["POST"])
 def register():
-    data = request.json
+    data = request.json or {}
     name = data.get("name")
     email = data.get("email")
     password = data.get("password")
     phone = data.get("phone")
     user_type_id = data.get("userTypeId")
-    print("[REGISTER] Incoming data:", data)
+    print(
+        "[REGISTER] Incoming data:", {k: v for k, v in data.items() if k != "password"}
+    )
 
     # Validate input
     if not name or not email or not password or not user_type_id:
@@ -141,14 +149,15 @@ def register():
     if not is_valid:
         return jsonify({"success": False, "error": error_msg}), 400
 
+    conn = None
+    cur = None
     try:
         conn = get_conn()
         cur = conn.cursor()
+
         # Check for duplicate email
         cur.execute("SELECT id FROM users WHERE email = %s", (email,))
         if cur.fetchone():
-            cur.close()
-            conn.close()
             print("[REGISTER] Duplicate email:", email)
             return jsonify({"success": False, "error": "Email already exists"}), 409
 
@@ -156,36 +165,45 @@ def register():
         cur.execute("SELECT id FROM usertypes WHERE id = %s", (user_type_id,))
         user_type_row = cur.fetchone()
         if not user_type_row:
-            cur.close()
-            conn.close()
             print("[REGISTER] Invalid userTypeId:", user_type_id)
             return jsonify({"success": False, "error": "Invalid userTypeId"}), 400
 
-        try:
-            cur.execute(
-                "INSERT INTO users (name, email, password, phone, usertype_id) VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                (name, email, password, phone, user_type_id),
-            )
-            user_id = cur.fetchone()[0]
-            conn.commit()
-            print(f"[REGISTER] User created: id={user_id}, email={email}")
-        except Exception as insert_err:
-            print(f"[REGISTER] Insert error: {insert_err}")
-            raise
-        cur.close()
-        conn.close()
+        # Insert user
+        cur.execute(
+            "INSERT INTO users (name, email, password, phone, usertype_id) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (name, email, password, phone, user_type_id),
+        )
+        user_id = cur.fetchone()[0]
+        conn.commit()
+        print(f"[REGISTER] User created: id={user_id}, email={email}")
         return jsonify({"success": True, "user_id": user_id})
     except Exception as e:
         import traceback
 
         print("[REGISTER] Exception:", str(e))
         traceback.print_exc()
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         return (
             jsonify(
                 {"success": False, "error": "Failed to create user", "detail": str(e)}
             ),
             500,
         )
+    finally:
+        if cur:
+            try:
+                cur.close()
+            except Exception:
+                pass
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # --- GET USER TYPES (for registration dropdown) ---
@@ -212,6 +230,8 @@ def login():
     password = data.get("password")
     print("[LOGIN] Incoming data:", data)
 
+    conn = None
+    cur = None
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
@@ -225,8 +245,6 @@ def login():
         row = cur.fetchone()
         print(f"[LOGIN] Query result: {row}")
         if not row:
-            cur.close()
-            conn.close()
             print(f"[LOGIN] Invalid email or password for email={email}")
             return (
                 jsonify({"success": False, "error": "Invalid email or password."}),
@@ -246,8 +264,6 @@ def login():
             (user_id, "login", starttime, starttime, starttime),
         )
         conn.commit()
-        cur.close()
-        conn.close()
         print(f"[LOGIN] Success: user_id={user_id}, session_id={session_id}")
         return jsonify({"success": True, "session_id": session_id})
     except Exception as e:
@@ -255,10 +271,26 @@ def login():
 
         print("[LOGIN] Exception:", str(e))
         traceback.print_exc()
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         return (
             jsonify({"success": False, "error": "Login failed", "detail": str(e)}),
             500,
         )
+    finally:
+        if cur:
+            try:
+                cur.close()
+            except Exception:
+                pass
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # --- LOGOUT (set endtime + duration on last session, log to UserActivities) ---
