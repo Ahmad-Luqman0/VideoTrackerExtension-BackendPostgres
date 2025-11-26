@@ -1015,8 +1015,32 @@ def _adjust_queue_counts(cur, queue_id, metadata, delta=1):
         sub_counts = {}
 
     # preserve old values
-    prev_main_count = int(main_count or 0)
-    main_count = max(0, int(prev_main_count) + int(delta))
+    # If frontend provided scraped counts and requested them to be used, honor them
+    use_scraped = False
+    try:
+        if (
+            metadata
+            and isinstance(metadata, dict)
+            and metadata.get("use_scraped_counts")
+        ):
+            use_scraped = True
+    except Exception:
+        use_scraped = False
+
+    if (
+        use_scraped
+        and metadata.get("queue_count_old") is not None
+        and metadata.get("queue_count_new") is not None
+    ):
+        try:
+            prev_main_count = int(metadata.get("queue_count_old") or 0)
+            main_count = int(metadata.get("queue_count_new") or prev_main_count)
+        except Exception:
+            prev_main_count = int(main_count or 0)
+            main_count = max(0, int(prev_main_count) + int(delta))
+    else:
+        prev_main_count = int(main_count or 0)
+        main_count = max(0, int(prev_main_count) + int(delta))
 
     # If metadata contains explicit subqueue name, adjust that count
     selected_subname = None
@@ -1026,13 +1050,31 @@ def _adjust_queue_counts(cur, queue_id, metadata, delta=1):
             metadata.get("subqueue") or metadata.get("sub_queue") or metadata.get("sub")
         )
         if selected_subname:
-            try:
-                current = int(sub_counts.get(selected_subname, 0) or 0)
-            except Exception:
-                current = 0
-            prev_sub_count = current
-            current = max(0, current + int(delta))
-            sub_counts[selected_subname] = current
+            # If frontend provided scraped subqueue counts and requested them to be used, honor them
+            if (
+                use_scraped
+                and metadata.get("subqueue_count_old") is not None
+                and metadata.get("subqueue_count_new") is not None
+            ):
+                try:
+                    prev_sub_count = int(metadata.get("subqueue_count_old") or 0)
+                    current = int(metadata.get("subqueue_count_new") or prev_sub_count)
+                except Exception:
+                    try:
+                        current = int(sub_counts.get(selected_subname, 0) or 0)
+                    except Exception:
+                        current = 0
+                    prev_sub_count = current
+                    current = max(0, current + int(delta))
+                sub_counts[selected_subname] = current
+            else:
+                try:
+                    current = int(sub_counts.get(selected_subname, 0) or 0)
+                except Exception:
+                    current = 0
+                prev_sub_count = current
+                current = max(0, current + int(delta))
+                sub_counts[selected_subname] = current
 
     # If no explicit subqueue in metadata, try to infer from the queue name (fallback IDs like 'brazil_subname')
     if not selected_subname:
