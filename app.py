@@ -835,6 +835,16 @@ def create_queue():
                     pass
             subqueue_counts = obj
 
+        # Ensure `subqueues` array reflects the keys present in subqueue_counts
+        try:
+            if isinstance(subqueue_counts, dict):
+                # preserve insertion order where possible
+                subqueues = list(subqueue_counts.keys())
+            else:
+                subqueues = subqueues if subqueues is not None else []
+        except Exception:
+            subqueues = subqueues if subqueues is not None else []
+
         print(
             f"[QUEUES] Inserting queue: name={name}, session_id={session_id}, main_queue={main_queue}, main_queue_count={main_queue_count}, subqueues={subqueues}, subqueue_counts={subqueue_counts}"
         )
@@ -980,55 +990,86 @@ def _adjust_queue_counts(cur, queue_id, metadata, delta=1):
     row = cur.fetchone()
     if not row:
         return
-    main_count = row[0] or 0
-    sub_counts_json = row[1]
-    try:
-        sub_counts = json.loads(sub_counts_json) if sub_counts_json else {}
-    except Exception:
-        sub_counts = {}
+        main_count = row[0] or 0
+        sub_counts_json = row[1]
+        existing_selected = row[2]
+        if queue_id is None:
+            return
 
-    # preserve old values
-    prev_main_count = int(main_count or 0)
-
-    main_count = max(0, int(prev_main_count) + int(delta))
-
-    # If metadata contains explicit subqueue name, adjust that count
-    selected_subname = None
-    prev_sub_count = 0
-    if metadata and isinstance(metadata, dict):
-        selected_subname = (
-            metadata.get("subqueue") or metadata.get("sub_queue") or metadata.get("sub")
-        )
-        if selected_subname:
-            try:
-                current = int(sub_counts.get(selected_subname, 0) or 0)
-            except Exception:
-                current = 0
-            prev_sub_count = current
-            current = max(0, current + int(delta))
-            sub_counts[selected_subname] = current
-
-    # Update queue row, and write old/new counts and selected_subqueue for audit
-    try:
-        # Also maintain the `subqueues` array column (list of subqueue names) for easier display
-        subqueues_list = list(sub_counts.keys())
+        # Lock queue row and read existing relevant fields
         cur.execute(
-            "UPDATE queues SET main_queue_count = %s, subqueues = %s, subqueue_counts = %s, selected_subqueue = %s, queue_count_old = %s, queue_count_new = %s, subqueue_count_old = %s, subqueue_count_new = %s, updated_at = NOW() WHERE id = %s",
-            (
-                main_count,
-                json.dumps(subqueues_list),
-                json.dumps(sub_counts),
-                selected_subname,
-                prev_main_count,
-                main_count,
-                prev_sub_count,
-                (sub_counts.get(selected_subname) if selected_subname else None),
-                queue_id,
-            ),
+            "SELECT main_queue_count, subqueue_counts, selected_subqueue, queue_count_old, queue_count_new, subqueue_count_old, subqueue_count_new FROM queues WHERE id = %s FOR UPDATE",
+            (queue_id,),
         )
-    except Exception as e:
-        print(f"[_adjust_queue_counts] Failed to update queue counts: {e}")
-        raise
+        row = cur.fetchone()
+        if not row:
+            return
+
+        main_count = row[0] or 0
+        sub_counts_json = row[1]
+        existing_selected = row[2]
+        existing_queue_count_new = row[4]
+        existing_subqueue_count_new = row[6]
+
+        try:
+            sub_counts = json.loads(sub_counts_json) if sub_counts_json else {}
+        except Exception:
+            sub_counts = {}
+
+        # preserve old values
+        prev_main_count = int(main_count or 0)
+        main_count = max(0, int(prev_main_count) + int(delta))
+
+        # If metadata contains explicit subqueue name, adjust that count
+        selected_subname = None
+        prev_sub_count = 0
+        if metadata and isinstance(metadata, dict):
+            selected_subname = (
+                metadata.get("subqueue")
+                or metadata.get("sub_queue")
+                or metadata.get("sub")
+            )
+            if selected_subname:
+                try:
+                    current = int(sub_counts.get(selected_subname, 0) or 0)
+                except Exception:
+                    current = 0
+                prev_sub_count = current
+                current = max(0, current + int(delta))
+                sub_counts[selected_subname] = current
+
+        # Update queue row, and write old/new counts and selected_subqueue for audit
+        try:
+            # Also maintain the `subqueues` array column (list of subqueue names) for easier display
+            subqueues_list = list(sub_counts.keys())
+
+            # If no new selected_subname provided, preserve existing selected_subqueue
+            new_selected = selected_subname if selected_subname else existing_selected
+            # subqueue_count_new should reflect the new value for the selected subqueue if one was adjusted,
+            # otherwise preserve existing subqueue_count_new
+            new_subqueue_count_new = (
+                sub_counts.get(selected_subname)
+                if selected_subname
+                else existing_subqueue_count_new
+            )
+
+            cur.execute(
+                "UPDATE queues SET main_queue_count = %s, subqueues = %s, subqueue_counts = %s, selected_subqueue = %s, queue_count_old = %s, queue_count_new = %s, subqueue_count_old = %s, subqueue_count_new = %s, updated_at = NOW() WHERE id = %s",
+                (
+                    main_count,
+                    json.dumps(subqueues_list),
+                    json.dumps(sub_counts),
+                    new_selected,
+                    prev_main_count,
+                    main_count,
+                    prev_sub_count,
+                    new_subqueue_count_new,
+                    queue_id,
+                ),
+            )
+        except Exception as e:
+            print(f"[_adjust_queue_counts] Failed to update queue counts: {e}")
+            raise
 
 
 @app.route("/cards", methods=["POST"])
