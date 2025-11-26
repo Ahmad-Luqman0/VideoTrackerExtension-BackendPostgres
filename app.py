@@ -645,6 +645,11 @@ def create_queue():
     subqueues = data.get("subqueues", [])
     # subqueue_counts can be object or list of {name,count}
     subqueue_counts = data.get("subqueue_counts", {})
+    selected_subqueue = data.get("selected_subqueue")
+    queue_count_old = data.get("queue_count_old")
+    queue_count_new = data.get("queue_count_new")
+    subqueue_count_old = data.get("subqueue_count_old")
+    subqueue_count_new = data.get("subqueue_count_new")
 
     if not session_id or not name:
         print("[QUEUES] Missing session_id or queue name")
@@ -680,13 +685,18 @@ def create_queue():
         try:
             cur.execute(
                 """
-                INSERT INTO queues (name, session_id, main_queue, main_queue_count, subqueues, subqueue_counts)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                INSERT INTO queues (name, session_id, main_queue, main_queue_count, subqueues, subqueue_counts, selected_subqueue, queue_count_old, queue_count_new, subqueue_count_old, subqueue_count_new)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (session_id, name) DO UPDATE SET
                     main_queue = EXCLUDED.main_queue,
                     main_queue_count = GREATEST(queues.main_queue_count, EXCLUDED.main_queue_count),
                     subqueues = EXCLUDED.subqueues,
                     subqueue_counts = EXCLUDED.subqueue_counts,
+                    selected_subqueue = COALESCE(EXCLUDED.selected_subqueue, queues.selected_subqueue),
+                    queue_count_old = COALESCE(EXCLUDED.queue_count_old, queues.queue_count_old),
+                    queue_count_new = COALESCE(EXCLUDED.queue_count_new, queues.queue_count_new),
+                    subqueue_count_old = COALESCE(EXCLUDED.subqueue_count_old, queues.subqueue_count_old),
+                    subqueue_count_new = COALESCE(EXCLUDED.subqueue_count_new, queues.subqueue_count_new),
                     updated_at = NOW()
                 RETURNING id
                 """,
@@ -697,6 +707,11 @@ def create_queue():
                     main_queue_count,
                     json.dumps(subqueues),
                     json.dumps(subqueue_counts),
+                    selected_subqueue,
+                    queue_count_old,
+                    queue_count_new,
+                    subqueue_count_old,
+                    subqueue_count_new,
                 ),
             )
             queue_id = cur.fetchone()[0]
@@ -734,11 +749,11 @@ def list_queues():
         session_id = request.args.get("session_id")
         if session_id:
             print(f"[QUEUES][DEBUG] Filtering by session_id: {session_id}")
-            sql = "SELECT id, name, session_id, main_queue, main_queue_count, subqueues, subqueue_counts, active, created_at FROM queues WHERE session_id = %s ORDER BY id DESC"
+            sql = "SELECT id, name, session_id, main_queue, main_queue_count, subqueues, subqueue_counts, selected_subqueue, queue_count_old, queue_count_new, subqueue_count_old, subqueue_count_new, active, created_at FROM queues WHERE session_id = %s ORDER BY id DESC"
             print(f"[QUEUES][DEBUG] SQL: {sql}")
             cur.execute(sql, (session_id,))
         else:
-            sql = "SELECT id, name, session_id, main_queue, main_queue_count, subqueues, subqueue_counts, active, created_at FROM queues ORDER BY id DESC"
+            sql = "SELECT id, name, session_id, main_queue, main_queue_count, subqueues, subqueue_counts, selected_subqueue, queue_count_old, queue_count_new, subqueue_count_old, subqueue_count_new, active, created_at FROM queues ORDER BY id DESC"
             print(f"[QUEUES][DEBUG] SQL: {sql}")
             cur.execute(sql)
         rows = cur.fetchall()
@@ -765,6 +780,7 @@ def list_queues():
             elif not isinstance(subqueue_counts_val, dict):
                 subqueue_counts_val = {}
 
+            # Map indices carefully after extended SELECT
             queues.append(
                 {
                     "id": r[0],
@@ -774,8 +790,13 @@ def list_queues():
                     "main_queue_count": r[4],
                     "subqueues": subqueues_val,
                     "subqueue_counts": subqueue_counts_val,
-                    "active": r[7],
-                    "created_at": r[8].isoformat() if r[8] else None,
+                    "selected_subqueue": r[7],
+                    "queue_count_old": r[8],
+                    "queue_count_new": r[9],
+                    "subqueue_count_old": r[10],
+                    "subqueue_count_new": r[11],
+                    "active": r[12],
+                    "created_at": r[13].isoformat() if r[13] else None,
                 }
             )
         cur.close()
@@ -797,7 +818,7 @@ def _adjust_queue_counts(cur, queue_id, metadata, delta=1):
         return
     # Lock queue row
     cur.execute(
-        "SELECT main_queue_count, subqueue_counts FROM queues WHERE id = %s FOR UPDATE",
+        "SELECT main_queue_count, subqueue_counts, queue_count_old, queue_count_new, subqueue_count_old, subqueue_count_new FROM queues WHERE id = %s FOR UPDATE",
         (queue_id,),
     )
     row = cur.fetchone()
@@ -810,25 +831,45 @@ def _adjust_queue_counts(cur, queue_id, metadata, delta=1):
     except Exception:
         sub_counts = {}
 
-    main_count = max(0, int(main_count) + int(delta))
+    # preserve old values
+    prev_main_count = int(main_count or 0)
+
+    main_count = max(0, int(prev_main_count) + int(delta))
 
     # If metadata contains explicit subqueue name, adjust that count
+    selected_subname = None
+    prev_sub_count = 0
     if metadata and isinstance(metadata, dict):
-        subname = (
+        selected_subname = (
             metadata.get("subqueue") or metadata.get("sub_queue") or metadata.get("sub")
         )
-        if subname:
+        if selected_subname:
             try:
-                current = int(sub_counts.get(subname, 0) or 0)
+                current = int(sub_counts.get(selected_subname, 0) or 0)
             except Exception:
                 current = 0
+            prev_sub_count = current
             current = max(0, current + int(delta))
-            sub_counts[subname] = current
+            sub_counts[selected_subname] = current
 
-    cur.execute(
-        "UPDATE queues SET main_queue_count = %s, subqueue_counts = %s, updated_at = NOW() WHERE id = %s",
-        (main_count, json.dumps(sub_counts), queue_id),
-    )
+    # Update queue row, and write old/new counts and selected_subqueue for audit
+    try:
+        cur.execute(
+            "UPDATE queues SET main_queue_count = %s, subqueue_counts = %s, selected_subqueue = %s, queue_count_old = %s, queue_count_new = %s, subqueue_count_old = %s, subqueue_count_new = %s, updated_at = NOW() WHERE id = %s",
+            (
+                main_count,
+                json.dumps(sub_counts),
+                selected_subname,
+                prev_main_count,
+                main_count,
+                prev_sub_count,
+                (sub_counts.get(selected_subname) if selected_subname else None),
+                queue_id,
+            ),
+        )
+    except Exception as e:
+        print(f"[_adjust_queue_counts] Failed to update queue counts: {e}")
+        raise
 
 
 @app.route("/cards", methods=["POST"])
@@ -939,9 +980,33 @@ def add_card():
 
         conn.commit()
         print(f"[CARDS] Card inserted/updated: id={card_db_id}")
+        # Fetch updated queue counts to return to caller
+        try:
+            cur.execute(
+                "SELECT id, name, main_queue_count, subqueue_counts, selected_subqueue, queue_count_old, queue_count_new, subqueue_count_old, subqueue_count_new FROM queues WHERE id = %s",
+                (queue_id,),
+            )
+            qrow = cur.fetchone()
+            queue_info = None
+            if qrow:
+                queue_info = {
+                    "id": qrow[0],
+                    "name": qrow[1],
+                    "main_queue_count": qrow[2],
+                    "subqueue_counts": json.loads(qrow[3]) if qrow[3] else {},
+                    "selected_subqueue": qrow[4],
+                    "queue_count_old": qrow[5],
+                    "queue_count_new": qrow[6],
+                    "subqueue_count_old": qrow[7],
+                    "subqueue_count_new": qrow[8],
+                }
+        except Exception as e:
+            print(f"[CARDS] Failed to fetch queue info: {e}")
+            queue_info = None
+
         cur.close()
         conn.close()
-        return jsonify({"success": True, "card_id": card_db_id})
+        return jsonify({"success": True, "card_id": card_db_id, "queue": queue_info})
     except Exception as e:
         print(f"[CARDS] Exception: {e}")
         import traceback
