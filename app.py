@@ -658,10 +658,50 @@ def create_queue():
             400,
         )
 
-    # Validation: main_queue should be a country-like name (letters and spaces only)
-    def is_country_like(s):
+    # Validation: only allow a known set of main queues (countries / global aliases)
+    allowed_main_queues = {
+        "brazil",
+        "indonesia",
+        "mexico",
+        "colombia",
+        "argentina",
+        "pakistan",
+        "egypt",
+        "turkey",
+        "peru",
+        "saudi arabia",
+        "jordan",
+        "iraq",
+        "america",
+        "global",
+        "usa",
+        "us",
+        "uk",
+        "united states",
+        "canada",
+        "china",
+        "japan",
+        "korea",
+        "thailand",
+        "vietnam",
+        "philippines",
+        "malaysia",
+        "singapore",
+        "australia",
+        "russia",
+        "france",
+        "germany",
+        "spain",
+        "italy",
+        "ksa",
+        "sa",
+        "uae",
+        "nz",
+    }
+
+    def is_allowed_main_queue(s):
         try:
-            return bool(s and re.match(r"^[A-Za-z\s]{2,50}$", s.strip()))
+            return bool(s and s.strip().lower() in allowed_main_queues)
         except Exception:
             return False
 
@@ -669,13 +709,13 @@ def create_queue():
     looks_like_subqueue = bool(name and re.search(r"[-_/]", name))
 
     if main_queue:
-        if not is_country_like(main_queue):
+        if not is_allowed_main_queue(main_queue):
             print(f"[QUEUES] Invalid main_queue value: {main_queue}")
             return (
                 jsonify(
                     {
                         "success": False,
-                        "error": "Invalid main_queue: must be a country-like name (letters and spaces only)",
+                        "error": "Invalid main_queue: must be one of allowed country/main names",
                     }
                 ),
                 400,
@@ -970,10 +1010,13 @@ def _adjust_queue_counts(cur, queue_id, metadata, delta=1):
 
     # Update queue row, and write old/new counts and selected_subqueue for audit
     try:
+        # Also maintain the `subqueues` array column (list of subqueue names) for easier display
+        subqueues_list = list(sub_counts.keys())
         cur.execute(
-            "UPDATE queues SET main_queue_count = %s, subqueue_counts = %s, selected_subqueue = %s, queue_count_old = %s, queue_count_new = %s, subqueue_count_old = %s, subqueue_count_new = %s, updated_at = NOW() WHERE id = %s",
+            "UPDATE queues SET main_queue_count = %s, subqueues = %s, subqueue_counts = %s, selected_subqueue = %s, queue_count_old = %s, queue_count_new = %s, subqueue_count_old = %s, subqueue_count_new = %s, updated_at = NOW() WHERE id = %s",
             (
                 main_count,
+                json.dumps(subqueues_list),
                 json.dumps(sub_counts),
                 selected_subname,
                 prev_main_count,
