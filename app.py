@@ -658,6 +658,55 @@ def create_queue():
             400,
         )
 
+    # Validation: main_queue should be a country-like name (letters and spaces only)
+    def is_country_like(s):
+        try:
+            return bool(s and re.match(r"^[A-Za-z\s]{2,50}$", s.strip()))
+        except Exception:
+            return False
+
+    # If a subqueue-like name is provided (contains dash or special tokens) then a main_queue must be present
+    looks_like_subqueue = bool(name and re.search(r"[-_/]", name))
+
+    if main_queue:
+        if not is_country_like(main_queue):
+            print(f"[QUEUES] Invalid main_queue value: {main_queue}")
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": "Invalid main_queue: must be a country-like name (letters and spaces only)",
+                    }
+                ),
+                400,
+            )
+
+    # Reject attempts to use a subqueue name as the main_queue (e.g., frontend fallback used subqueue of the same name)
+    if name and main_queue and name == main_queue and looks_like_subqueue:
+        print(f"[QUEUES] Refusing to treat subqueue name as main_queue: name={name}")
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "Invalid request: provided queue name looks like a subqueue. Provide the main_queue (country) separately.",
+                }
+            ),
+            400,
+        )
+
+    # If the payload appears to be describing a subqueue (name contains -) ensure main_queue is provided
+    if looks_like_subqueue and not main_queue:
+        print(f"[QUEUES] Subqueue payload missing main_queue: name={name}")
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "Subqueue payload requires a valid main_queue (country name)",
+                }
+            ),
+            400,
+        )
+
     try:
         conn = get_conn()
         cur = conn.cursor()
@@ -668,6 +717,73 @@ def create_queue():
             cur.close()
             conn.close()
             return jsonify({"success": False, "error": "Session not found"}), 404
+        # If the payload represents a subqueue (name != main_queue) and a main_queue is provided,
+        # update the main_queue row's subqueue_counts instead of creating a separate queue row for the subqueue.
+        try:
+            if main_queue and name and name != main_queue:
+                # Lock main_queue row for update (create it if missing)
+                cur.execute(
+                    "SELECT id, subqueue_counts FROM queues WHERE session_id = %s AND name = %s FOR UPDATE",
+                    (session_id, main_queue),
+                )
+                mrow = cur.fetchone()
+                if mrow:
+                    main_id = mrow[0]
+                    existing_subcounts = mrow[1]
+                    try:
+                        existing_subcounts = (
+                            json.loads(existing_subcounts) if existing_subcounts else {}
+                        )
+                    except Exception:
+                        existing_subcounts = {}
+                else:
+                    # Create a main queue row if it doesn't exist
+                    cur.execute(
+                        "INSERT INTO queues (name, session_id, main_queue, main_queue_count, subqueues, subqueue_counts, selected_subqueue, queue_count_old, queue_count_new, subqueue_count_old, subqueue_count_new) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                        (
+                            main_queue,
+                            session_id,
+                            main_queue,
+                            main_queue_count,
+                            json.dumps(subqueues),
+                            json.dumps({}),
+                            None,
+                            main_queue_count,
+                            None,
+                            None,
+                            None,
+                        ),
+                    )
+                    main_id = cur.fetchone()[0]
+                    existing_subcounts = {}
+
+                # Determine subqueue count to write (prefer explicit subqueue_count_old, then queue_count_old)
+                try:
+                    sub_old = int(subqueue_count_old or queue_count_old or 0)
+                except Exception:
+                    sub_old = 0
+
+                # Update the main queue's subqueue_counts and audit fields
+                existing_subcounts[name] = sub_old
+                cur.execute(
+                    "UPDATE queues SET subqueue_counts = %s, selected_subqueue = %s, subqueue_count_old = %s, subqueue_count_new = %s, updated_at = NOW() WHERE id = %s",
+                    (json.dumps(existing_subcounts), name, sub_old, None, main_id),
+                )
+                conn.commit()
+                cur.close()
+                conn.close()
+                print(
+                    f"[QUEUES] Updated main queue {main_queue} with subqueue {name} count={sub_old}"
+                )
+                return jsonify(
+                    {"success": True, "name": main_queue, "queue_id": main_id}
+                )
+        except Exception as e:
+            print(f"[QUEUES] Exception handling subqueue-as-update: {e}")
+            import traceback
+
+            traceback.print_exc()
+            # fall through to normal insert handling on unexpected errors
 
         # Normalize subqueue_counts to JSON object
         if isinstance(subqueue_counts, list):
