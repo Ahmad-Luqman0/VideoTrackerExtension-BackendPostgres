@@ -1006,7 +1006,9 @@ def _adjust_queue_counts(cur, queue_id, metadata, delta=1):
     main_count = row[2] or 0
     sub_counts_json = row[3]
     existing_selected = row[4]
+    existing_queue_count_old = row[5]
     existing_queue_count_new = row[6]
+    existing_subqueue_count_old = row[7]
     existing_subqueue_count_new = row[8]
 
     try:
@@ -1117,10 +1119,41 @@ def _adjust_queue_counts(cur, queue_id, metadata, delta=1):
             # Set selected_subname so downstream logic treats it as adjusted
             selected_subname = existing_selected
 
-    # Update queue row, and write old/new counts and selected_subqueue for audit
+    # Decide which 'old' audit fields to write:
+    # - queue_count_old: write only if empty in DB; otherwise preserve existing value
+    # - subqueue_count_old: if the selected subqueue changed (new != existing_selected), set it to the previous subqueue count; otherwise preserve existing value when present
     try:
         # Also maintain the `subqueues` array column (list of subqueue names) for easier display
         subqueues_list = list(sub_counts.keys())
+
+        # Determine queue_count_old to write (preserve existing if present)
+        queue_count_old_to_write = None
+        try:
+            if existing_queue_count_old is None:
+                queue_count_old_to_write = int(prev_main_count or 0)
+            else:
+                queue_count_old_to_write = existing_queue_count_old
+        except Exception:
+            queue_count_old_to_write = int(prev_main_count or 0)
+
+        # Determine subqueue_count_old to write
+        subqueue_count_old_to_write = None
+        try:
+            if selected_subname:
+                # If the selected subqueue changed compared to existing_selected, record the previous subqueue count
+                if (not existing_selected) or (existing_selected != selected_subname):
+                    subqueue_count_old_to_write = int(prev_sub_count or 0)
+                else:
+                    # preserve existing subqueue_count_old if present, otherwise set to prev_sub_count
+                    if existing_subqueue_count_old is None:
+                        subqueue_count_old_to_write = int(prev_sub_count or 0)
+                    else:
+                        subqueue_count_old_to_write = existing_subqueue_count_old
+            else:
+                # No explicit selected_subname determined: preserve existing value
+                subqueue_count_old_to_write = existing_subqueue_count_old
+        except Exception:
+            subqueue_count_old_to_write = int(prev_sub_count or 0)
 
         # If no new selected_subname provided, preserve existing selected_subqueue
         new_selected = selected_subname if selected_subname else existing_selected
@@ -1139,9 +1172,9 @@ def _adjust_queue_counts(cur, queue_id, metadata, delta=1):
                 json.dumps(subqueues_list),
                 json.dumps(sub_counts),
                 new_selected,
-                prev_main_count,
+                queue_count_old_to_write,
                 main_count,
-                prev_sub_count,
+                subqueue_count_old_to_write,
                 new_subqueue_count_new,
                 queue_id,
             ),
