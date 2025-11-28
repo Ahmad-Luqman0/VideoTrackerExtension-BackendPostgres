@@ -856,8 +856,8 @@ def create_queue():
                 ON CONFLICT (session_id, name) DO UPDATE SET
                     main_queue = EXCLUDED.main_queue,
                     main_queue_count = GREATEST(queues.main_queue_count, EXCLUDED.main_queue_count),
-                    subqueues = EXCLUDED.subqueues,
-                    subqueue_counts = EXCLUDED.subqueue_counts,
+                    subqueues = CASE WHEN EXCLUDED.subqueues IS NOT NULL AND EXCLUDED.subqueues != '[]'::jsonb THEN EXCLUDED.subqueues ELSE queues.subqueues END,
+                    subqueue_counts = CASE WHEN EXCLUDED.subqueue_counts IS NOT NULL AND EXCLUDED.subqueue_counts != '{}'::jsonb THEN EXCLUDED.subqueue_counts ELSE queues.subqueue_counts END,
                     selected_subqueue = COALESCE(EXCLUDED.selected_subqueue, queues.selected_subqueue),
                     queue_count_old = COALESCE(EXCLUDED.queue_count_old, queues.queue_count_old),
                     queue_count_new = COALESCE(EXCLUDED.queue_count_new, queues.queue_count_new),
