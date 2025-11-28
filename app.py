@@ -1166,10 +1166,9 @@ def _adjust_queue_counts(cur, queue_id, metadata, delta=1):
         )
 
         cur.execute(
-            "UPDATE queues SET main_queue_count = %s, subqueues = %s, subqueue_counts = %s, selected_subqueue = %s, queue_count_old = %s, queue_count_new = %s, subqueue_count_old = %s, subqueue_count_new = %s, updated_at = NOW() WHERE id = %s",
+            "UPDATE queues SET main_queue_count = %s, subqueue_counts = %s, selected_subqueue = %s, queue_count_old = %s, queue_count_new = %s, subqueue_count_old = %s, subqueue_count_new = %s, updated_at = NOW() WHERE id = %s",
             (
                 main_count,
-                json.dumps(subqueues_list),
                 json.dumps(sub_counts),
                 new_selected,
                 queue_count_old_to_write,
