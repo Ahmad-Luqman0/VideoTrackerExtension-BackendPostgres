@@ -7,6 +7,7 @@ from flask_cors import CORS
 import re
 import secrets
 import json
+import hashlib
 
 app = Flask(__name__)
 # Configure CORS to allow requests from Chrome extension and handle Private Network Access
@@ -162,9 +163,12 @@ def register():
             return jsonify({"success": False, "error": "Invalid userTypeId"}), 400
 
         try:
+            # Hash the password using SHA-256 before storing
+            hashed_password = hashlib.sha256(password.encode('utf-8')).hexdigest()
+            
             cur.execute(
                 "INSERT INTO users (name, email, password, phone, usertype_id) VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                (name, email, password, phone, user_type_id),
+                (name, email, hashed_password, phone, user_type_id),
             )
             user_id = cur.fetchone()[0]
             conn.commit()
@@ -216,18 +220,33 @@ def login():
         conn = get_conn()
         cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         print(
-            f"[LOGIN] Executing: SELECT id FROM users WHERE email = %s AND password = %s with email={email}"
+            f"[LOGIN] Executing: SELECT id, password FROM users WHERE email = %s with email={email}"
         )
+        # First, get the user by email only
         cur.execute(
-            "SELECT id FROM users WHERE email = %s AND password = %s",
-            (email, password),
+            "SELECT id, password FROM users WHERE email = %s",
+            (email,),
         )
         row = cur.fetchone()
         print(f"[LOGIN] Query result: {row}")
+        
         if not row:
             cur.close()
             conn.close()
-            print(f"[LOGIN] Invalid email or password for email={email}")
+            print(f"[LOGIN] User not found for email={email}")
+            return (
+                jsonify({"success": False, "error": "Invalid email or password."}),
+                401,
+            )
+        
+        # Verify the password using SHA-256 hash comparison
+        stored_password = row["password"]
+        hashed_input_password = hashlib.sha256(password.encode('utf-8')).hexdigest()
+        
+        if hashed_input_password != stored_password:
+            cur.close()
+            conn.close()
+            print(f"[LOGIN] Invalid password for email={email}")
             return (
                 jsonify({"success": False, "error": "Invalid email or password."}),
                 401,
