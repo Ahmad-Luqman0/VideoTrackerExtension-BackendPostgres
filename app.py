@@ -208,6 +208,24 @@ def get_usertypes():
         return jsonify({"userTypes": [], "error": str(e)}), 500
 
 
+# --- GET WHITELISTED URLs (for extension runtime filtering) ---
+@app.route("/whitelisted_urls", methods=["GET"])
+def get_whitelisted_urls():
+    """Fetch all whitelisted URLs from database for extension to use"""
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT id, url FROM whitelisted_urls ORDER BY id")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        urls = [{"id": row[0], "url": row[1]} for row in rows]
+        return jsonify({"success": True, "urls": urls})
+    except Exception as e:
+        print(f"[WHITELISTED_URLS] Error: {e}")
+        return jsonify({"success": False, "urls": [], "error": str(e)}), 500
+
+
 # --- LOGIN (create new session for the user, log to UserActivities) ---
 @app.route("/login", methods=["POST"])
 def login():
