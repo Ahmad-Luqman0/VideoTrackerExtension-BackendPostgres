@@ -1094,11 +1094,23 @@ def _adjust_queue_counts(cur, queue_id, metadata, delta=1):
     existing_queue_count_new = row[6]
     existing_subqueue_count_old = row[7]
     existing_subqueue_count_new = row[8]
+    
+    print(f"[_adjust_queue_counts] Read queue {queue_id}: sub_counts_json={sub_counts_json} (type={type(sub_counts_json).__name__})")
 
-    try:
-        sub_counts = json.loads(sub_counts_json) if sub_counts_json else {}
-    except Exception:
+    # Parse sub_counts - handle None, dict, str
+    if sub_counts_json is None:
         sub_counts = {}
+    elif isinstance(sub_counts_json, dict):
+        sub_counts = sub_counts_json.copy()  # Make a copy to avoid mutating original
+    elif isinstance(sub_counts_json, str):
+        try:
+            sub_counts = json.loads(sub_counts_json)
+        except Exception:
+            sub_counts = {}
+    else:
+        sub_counts = {}
+    
+    print(f"[_adjust_queue_counts] After parsing: sub_counts={sub_counts}")
 
     # preserve old values
     # If frontend provided scraped counts and requested them to be used, honor them
@@ -1249,6 +1261,7 @@ def _adjust_queue_counts(cur, queue_id, metadata, delta=1):
             else existing_subqueue_count_new
         )
 
+        print(f"[_adjust_queue_counts] WRITING to queue {queue_id}: sub_counts={sub_counts}")
         cur.execute(
             "UPDATE queues SET main_queue_count = %s, subqueue_counts = %s, selected_subqueue = %s, queue_count_old = %s, queue_count_new = %s, subqueue_count_old = %s, subqueue_count_new = %s, updated_at = NOW() WHERE id = %s",
             (
