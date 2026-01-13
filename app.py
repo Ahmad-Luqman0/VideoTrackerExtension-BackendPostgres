@@ -842,9 +842,11 @@ def create_queue():
 
                 # Update the main queue's subqueue_counts and audit fields
                 existing_subcounts[name] = sub_old
+                # Also update the subqueues array to reflect all keys
+                subqueues_list = list(existing_subcounts.keys())
                 cur.execute(
-                    "UPDATE queues SET subqueue_counts = %s, selected_subqueue = %s, subqueue_count_old = %s, subqueue_count_new = %s, updated_at = NOW() WHERE id = %s",
-                    (json.dumps(existing_subcounts), name, sub_old, None, main_id),
+                    "UPDATE queues SET subqueues = %s, subqueue_counts = %s, selected_subqueue = %s, subqueue_count_old = %s, subqueue_count_new = %s, updated_at = NOW() WHERE id = %s",
+                    (json.dumps(subqueues_list), json.dumps(existing_subcounts), name, sub_old, None, main_id),
                 )
                 conn.commit()
                 cur.close()
@@ -891,10 +893,25 @@ def create_queue():
                 INSERT INTO queues (name, session_id, main_queue, main_queue_count, subqueues, subqueue_counts, selected_subqueue, queue_count_old, queue_count_new, subqueue_count_old, subqueue_count_new)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (session_id, name) DO UPDATE SET
-                    main_queue = EXCLUDED.main_queue,
+                    main_queue = COALESCE(EXCLUDED.main_queue, queues.main_queue),
                     main_queue_count = GREATEST(queues.main_queue_count, EXCLUDED.main_queue_count),
-                    subqueues = CASE WHEN EXCLUDED.subqueues IS NOT NULL AND EXCLUDED.subqueues != '[]'::jsonb THEN EXCLUDED.subqueues ELSE queues.subqueues END,
-                    subqueue_counts = CASE WHEN EXCLUDED.subqueue_counts IS NOT NULL AND EXCLUDED.subqueue_counts != '{}'::jsonb THEN EXCLUDED.subqueue_counts ELSE queues.subqueue_counts END,
+                    subqueues = CASE 
+                        WHEN EXCLUDED.subqueues IS NOT NULL AND EXCLUDED.subqueues != '[]'::jsonb 
+                        THEN (
+                            SELECT jsonb_agg(DISTINCT elem) 
+                            FROM (
+                                SELECT jsonb_array_elements(COALESCE(queues.subqueues, '[]'::jsonb)) AS elem
+                                UNION
+                                SELECT jsonb_array_elements(EXCLUDED.subqueues) AS elem
+                            ) combined
+                        )
+                        ELSE queues.subqueues 
+                    END,
+                    subqueue_counts = CASE 
+                        WHEN EXCLUDED.subqueue_counts IS NOT NULL AND EXCLUDED.subqueue_counts != '{}'::jsonb 
+                        THEN COALESCE(queues.subqueue_counts, '{}'::jsonb) || EXCLUDED.subqueue_counts
+                        ELSE queues.subqueue_counts 
+                    END,
                     selected_subqueue = COALESCE(EXCLUDED.selected_subqueue, queues.selected_subqueue),
                     queue_count_old = COALESCE(EXCLUDED.queue_count_old, queues.queue_count_old),
                     queue_count_new = COALESCE(EXCLUDED.queue_count_new, queues.queue_count_new),
