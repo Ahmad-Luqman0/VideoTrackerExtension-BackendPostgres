@@ -808,22 +808,36 @@ def create_queue():
                     main_id = mrow[0]
                     existing_subqueues = mrow[1]
                     existing_subcounts = mrow[2]
-                    # Parse existing subqueues array
-                    try:
-                        if isinstance(existing_subqueues, str):
-                            existing_subqueues = json.loads(existing_subqueues)
-                        elif not isinstance(existing_subqueues, list):
-                            existing_subqueues = []
-                    except Exception:
+                    
+                    print(f"[QUEUES] Read existing data: subqueues={existing_subqueues} (type={type(existing_subqueues).__name__}), subqueue_counts={existing_subcounts} (type={type(existing_subcounts).__name__})")
+                    
+                    # Parse existing subqueues array - handle None, str, list, dict
+                    if existing_subqueues is None:
                         existing_subqueues = []
-                    # Parse existing subqueue_counts
-                    try:
-                        if isinstance(existing_subcounts, str):
-                            existing_subcounts = json.loads(existing_subcounts)
-                        elif not isinstance(existing_subcounts, dict):
-                            existing_subcounts = {}
-                    except Exception:
+                    elif isinstance(existing_subqueues, str):
+                        try:
+                            existing_subqueues = json.loads(existing_subqueues)
+                        except Exception:
+                            existing_subqueues = []
+                    elif isinstance(existing_subqueues, list):
+                        pass  # Already a list, keep as is
+                    else:
+                        existing_subqueues = []
+                    
+                    # Parse existing subqueue_counts - handle None, str, dict
+                    if existing_subcounts is None:
                         existing_subcounts = {}
+                    elif isinstance(existing_subcounts, str):
+                        try:
+                            existing_subcounts = json.loads(existing_subcounts)
+                        except Exception:
+                            existing_subcounts = {}
+                    elif isinstance(existing_subcounts, dict):
+                        pass  # Already a dict, keep as is
+                    else:
+                        existing_subcounts = {}
+                    
+                    print(f"[QUEUES] After parsing: subqueues={existing_subqueues}, subqueue_counts={existing_subcounts}")
                 else:
                     # Create a main queue row if it doesn't exist
                     cur.execute(
@@ -853,8 +867,9 @@ def create_queue():
                     sub_old = 0
 
                 # MERGE the new subqueue into existing data (don't overwrite)
-                # Add to subqueue_counts
+                # Add/update this subqueue's count in subqueue_counts (preserves existing)
                 existing_subcounts[name] = sub_old
+                print(f"[QUEUES] After adding {name}={sub_old}: subqueue_counts={existing_subcounts}")
                 # Add to subqueues array if not already present
                 if name not in existing_subqueues:
                     existing_subqueues.append(name)
