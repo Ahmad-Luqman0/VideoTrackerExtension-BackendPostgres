@@ -800,17 +800,28 @@ def create_queue():
             if main_queue and name and name != main_queue:
                 # Lock main_queue row for update (create it if missing)
                 cur.execute(
-                    "SELECT id, subqueue_counts FROM queues WHERE session_id = %s AND name = %s FOR UPDATE",
+                    "SELECT id, subqueues, subqueue_counts FROM queues WHERE session_id = %s AND name = %s FOR UPDATE",
                     (session_id, main_queue),
                 )
                 mrow = cur.fetchone()
                 if mrow:
                     main_id = mrow[0]
-                    existing_subcounts = mrow[1]
+                    existing_subqueues = mrow[1]
+                    existing_subcounts = mrow[2]
+                    # Parse existing subqueues array
                     try:
-                        existing_subcounts = (
-                            json.loads(existing_subcounts) if existing_subcounts else {}
-                        )
+                        if isinstance(existing_subqueues, str):
+                            existing_subqueues = json.loads(existing_subqueues)
+                        elif not isinstance(existing_subqueues, list):
+                            existing_subqueues = []
+                    except Exception:
+                        existing_subqueues = []
+                    # Parse existing subqueue_counts
+                    try:
+                        if isinstance(existing_subcounts, str):
+                            existing_subcounts = json.loads(existing_subcounts)
+                        elif not isinstance(existing_subcounts, dict):
+                            existing_subcounts = {}
                     except Exception:
                         existing_subcounts = {}
                 else:
@@ -832,6 +843,7 @@ def create_queue():
                         ),
                     )
                     main_id = cur.fetchone()[0]
+                    existing_subqueues = []
                     existing_subcounts = {}
 
                 # Determine subqueue count to write (prefer explicit subqueue_count_old, then queue_count_old)
@@ -840,13 +852,16 @@ def create_queue():
                 except Exception:
                     sub_old = 0
 
-                # Update the main queue's subqueue_counts and audit fields
+                # MERGE the new subqueue into existing data (don't overwrite)
+                # Add to subqueue_counts
                 existing_subcounts[name] = sub_old
-                # Also update the subqueues array to reflect all keys
-                subqueues_list = list(existing_subcounts.keys())
+                # Add to subqueues array if not already present
+                if name not in existing_subqueues:
+                    existing_subqueues.append(name)
+                
                 cur.execute(
                     "UPDATE queues SET subqueues = %s, subqueue_counts = %s, selected_subqueue = %s, subqueue_count_old = %s, subqueue_count_new = %s, updated_at = NOW() WHERE id = %s",
-                    (json.dumps(subqueues_list), json.dumps(existing_subcounts), name, sub_old, None, main_id),
+                    (json.dumps(existing_subqueues), json.dumps(existing_subcounts), name, sub_old, None, main_id),
                 )
                 conn.commit()
                 cur.close()
