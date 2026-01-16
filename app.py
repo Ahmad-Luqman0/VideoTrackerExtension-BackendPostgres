@@ -226,6 +226,36 @@ def get_whitelisted_urls():
         return jsonify({"success": False, "urls": [], "error": str(e)}), 500
 
 
+# --- GET ALLOWED QUEUES (for extension queue validation) ---
+@app.route("/allowed_queues", methods=["GET"])
+def get_allowed_queues():
+    """Fetch all allowed queue names from database for extension to use.
+    The extension uses this to validate and normalize scraped queue names.
+    """
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, queue_id, queue_name, business_type FROM allowed_queues ORDER BY queue_name"
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        queues = [
+            {
+                "id": row[0],
+                "queue_id": row[1],
+                "queue_name": row[2],
+                "business_type": row[3],
+            }
+            for row in rows
+        ]
+        return jsonify({"success": True, "queues": queues})
+    except Exception as e:
+        print(f"[ALLOWED_QUEUES] Error: {e}")
+        return jsonify({"success": False, "queues": [], "error": str(e)}), 500
+
+
 # --- LOGIN (create new session for the user, log to UserActivities) ---
 @app.route("/login", methods=["POST"])
 def login():
@@ -695,98 +725,128 @@ def create_queue():
             400,
         )
 
-    # Validation: only allow a known set of main queues (countries / global aliases)
-    allowed_main_queues = {
-        "brazil",
-        "indonesia",
-        "mexico",
-        "colombia",
-        "argentina",
-        "pakistan",
-        "egypt",
-        "turkey",
-        "peru",
-        "saudi arabia",
-        "jordan",
-        "iraq",
-        "america",
-        "global",
-        "usa",
-        "us",
-        "uk",
-        "united states",
-        "canada",
-        "china",
-        "japan",
-        "korea",
-        "thailand",
-        "vietnam",
-        "philippines",
-        "malaysia",
-        "singapore",
-        "australia",
-        "russia",
-        "france",
-        "germany",
-        "spain",
-        "italy",
-        "ksa",
-        "sa",
-        "uae",
-        "nz",
-    }
+    # Helper functions for queue validation
+    def find_matching_queue(queue_name, allowed_queues):
+        """
+        Find a matching queue name from the allowed list.
+        Returns (is_valid, normalized_name):
+        - If exact match found: (True, queue_name)
+        - If SINGLE partial match found: (True, full_allowed_name) - normalize to full name
+        - If MULTIPLE partial matches found: (True, original_queue_name) - keep as-is
+        - If no match: (False, None)
+        
+        Simple country names (without dashes) are kept as-is if they match.
+        """
+        if not queue_name:
+            return False, None, None
+        
+        input_lower = queue_name.strip().lower()
+        
+        # First, check for exact match (case-insensitive)
+        for allowed_name, _, allowed_qid in allowed_queues:
+            if allowed_name.lower() == input_lower:
+                return True, allowed_name, allowed_qid
+        
+        # Check if input is a simple country name (no special chars like - or /)
+        # If it matches a country entry, keep as-is
+        is_simple_name = not re.search(r"[-_/]", queue_name)
+        if is_simple_name:
+            for allowed_name, business_type, allowed_qid in allowed_queues:
+                if business_type == 'COUNTRY' and allowed_name.lower() == input_lower:
+                    return True, allowed_name, allowed_qid
+        
+        # For partial queue names, find all matching full names
+        # The input should be a prefix of the allowed name
+        if not is_simple_name:
+            matches = []
+            for allowed_name, business_type, allowed_qid in allowed_queues:
+                if business_type == 'COUNTRY':
+                    continue  # Skip country entries for partial matching
+                allowed_lower = allowed_name.lower()
+                # Check if input is a prefix of allowed name (partial match)
+                if allowed_lower.startswith(input_lower):
+                    matches.append((allowed_name, allowed_qid))
+            
+            if len(matches) == 1:
+                # Single match - normalize to the full name
+                print(f"[QUEUES] Single match found: '{queue_name}' -> '{matches[0][0]}'")
+                return True, matches[0][0], matches[0][1]
+            elif len(matches) > 1:
+                # Multiple matches - keep the original scraped value as-is
+                print(f"[QUEUES] Multiple matches found for '{queue_name}': {len(matches)} options - keeping as-is")
+                return True, queue_name, None
+        
+        return False, None, None
 
-    def is_allowed_main_queue(s):
-        try:
-            return bool(s and s.strip().lower() in allowed_main_queues)
-        except Exception:
-            return False
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        
+        # Fetch allowed queues from database
+        cur.execute(
+            "SELECT queue_name, business_type, queue_id FROM allowed_queues"
+        )
+        allowed_queues = [(row[0], row[1], row[2]) for row in cur.fetchall()]
+        print(f"[QUEUES] Loaded {len(allowed_queues)} allowed queues from database")
+        
+        # If a subqueue-like name is provided (contains dash or special tokens) then a main_queue must be present
+        looks_like_subqueue = bool(name and re.search(r"[-_/]", name))
 
-    # If a subqueue-like name is provided (contains dash or special tokens) then a main_queue must be present
-    looks_like_subqueue = bool(name and re.search(r"[-_/]", name))
+        # Validate and normalize the queue name (if match found in DB, normalize; otherwise accept as-is)
+        # Validate and normalize the queue name (if match found in DB, normalize; otherwise accept as-is)
+        matched_queue_id = None
+        if name:
+            is_valid, normalized_name, qid = find_matching_queue(name, allowed_queues)
+            if is_valid and normalized_name:
+                matched_queue_id = qid
+                if normalized_name != name:
+                    print(f"[QUEUES] Normalizing name: '{name}' -> '{normalized_name}'")
+                    name = normalized_name
+                else:
+                    print(f"[QUEUES] Keeping name as-is: '{name}'")
+            else:
+                print(f"[QUEUES] No match found, keeping name as-is: '{name}'")
 
-    if main_queue:
-        if not is_allowed_main_queue(main_queue):
-            print(f"[QUEUES] Invalid main_queue value: {main_queue}")
+        # Normalize main_queue if a match is found in DB (don't reject if not found)
+        if main_queue:
+            # We don't store main_queue's ID separately, so ignore qid result here
+            is_valid, normalized_main, _ = find_matching_queue(main_queue, allowed_queues)
+            if is_valid and normalized_main and normalized_main != main_queue:
+                print(f"[QUEUES] Normalizing main_queue: '{main_queue}' -> '{normalized_main}'")
+                main_queue = normalized_main
+            else:
+                print(f"[QUEUES] Keeping main_queue as-is: '{main_queue}'")
+
+        # Reject attempts to use a subqueue name as the main_queue (e.g., frontend fallback used subqueue of the same name)
+        if name and main_queue and name == main_queue and looks_like_subqueue:
+            print(f"[QUEUES] Refusing to treat subqueue name as main_queue: name={name}")
+            cur.close()
+            conn.close()
             return (
                 jsonify(
                     {
                         "success": False,
-                        "error": "Invalid main_queue: must be one of allowed country/main names",
+                        "error": "Invalid request: provided queue name looks like a subqueue. Provide the main_queue (country) separately.",
                     }
                 ),
                 400,
             )
 
-    # Reject attempts to use a subqueue name as the main_queue (e.g., frontend fallback used subqueue of the same name)
-    if name and main_queue and name == main_queue and looks_like_subqueue:
-        print(f"[QUEUES] Refusing to treat subqueue name as main_queue: name={name}")
-        return (
-            jsonify(
-                {
-                    "success": False,
-                    "error": "Invalid request: provided queue name looks like a subqueue. Provide the main_queue (country) separately.",
-                }
-            ),
-            400,
-        )
+        # If the payload appears to be describing a subqueue (name contains -) ensure main_queue is provided
+        if looks_like_subqueue and not main_queue:
+            print(f"[QUEUES] Subqueue payload missing main_queue: name={name}")
+            cur.close()
+            conn.close()
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": "Subqueue payload requires a valid main_queue (country name)",
+                    }
+                ),
+                400,
+            )
 
-    # If the payload appears to be describing a subqueue (name contains -) ensure main_queue is provided
-    if looks_like_subqueue and not main_queue:
-        print(f"[QUEUES] Subqueue payload missing main_queue: name={name}")
-        return (
-            jsonify(
-                {
-                    "success": False,
-                    "error": "Subqueue payload requires a valid main_queue (country name)",
-                }
-            ),
-            400,
-        )
-
-    try:
-        conn = get_conn()
-        cur = conn.cursor()
         # Ensure session exists
         cur.execute("SELECT id FROM sessions WHERE id = %s", (session_id,))
         if not cur.fetchone():
@@ -920,8 +980,8 @@ def create_queue():
         try:
             cur.execute(
                 """
-                INSERT INTO queues (name, session_id, main_queue, main_queue_count, subqueues, subqueue_counts, selected_subqueue, queue_count_old, queue_count_new, subqueue_count_old, subqueue_count_new)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO queues (name, session_id, main_queue, main_queue_count, subqueues, subqueue_counts, selected_subqueue, queue_count_old, queue_count_new, subqueue_count_old, subqueue_count_new, queue_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (session_id, name) DO UPDATE SET
                     main_queue = COALESCE(EXCLUDED.main_queue, queues.main_queue),
                     main_queue_count = GREATEST(queues.main_queue_count, EXCLUDED.main_queue_count),
@@ -947,6 +1007,7 @@ def create_queue():
                     queue_count_new = COALESCE(EXCLUDED.queue_count_new, queues.queue_count_new),
                     subqueue_count_old = COALESCE(EXCLUDED.subqueue_count_old, queues.subqueue_count_old),
                     subqueue_count_new = COALESCE(EXCLUDED.subqueue_count_new, queues.subqueue_count_new),
+                    queue_id = COALESCE(EXCLUDED.queue_id, queues.queue_id),
                     updated_at = NOW()
                 RETURNING id
                 """,
@@ -962,6 +1023,7 @@ def create_queue():
                     queue_count_new,
                     subqueue_count_old,
                     subqueue_count_new,
+                    matched_queue_id,
                 ),
             )
             queue_id = cur.fetchone()[0]
@@ -1063,16 +1125,7 @@ def list_queues():
 
 # --- CARDS API ---
 def _adjust_queue_counts(cur, queue_id, metadata, delta=1):
-    """Adjust main_queue_count and subqueue_counts for a queue by delta (+1 or -1).
-
-    Behavior:
-    - Always update `queue_count_old` and `queue_count_new` when a card is submitted.
-    - If `metadata` includes a `subqueue`, update that subqueue's count and set
-      `subqueue_count_old` / `subqueue_count_new` accordingly.
-    - If no `subqueue` is provided in `metadata`, attempt to infer a subqueue from the
-      queue `name` (e.g. "brazil_subA") and update that. If no subqueue is inferable,
-      preserve the existing `selected_subqueue` and `subqueue_count_new` (do not null them).
-    """
+    """Adjust main_queue_count and subqueue_counts for a queue by delta (+1 or -1)."""
     if queue_id is None:
         return
 
@@ -1215,9 +1268,7 @@ def _adjust_queue_counts(cur, queue_id, metadata, delta=1):
             # Set selected_subname so downstream logic treats it as adjusted
             selected_subname = existing_selected
 
-    # Decide which 'old' audit fields to write:
-    # - queue_count_old: write only if empty in DB; otherwise preserve existing value
-    # - subqueue_count_old: if the selected subqueue changed (new != existing_selected), set it to the previous subqueue count; otherwise preserve existing value when present
+
     try:
         # Also maintain the `subqueues` array column (list of subqueue names) for easier display
         subqueues_list = list(sub_counts.keys())
