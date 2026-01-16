@@ -818,19 +818,23 @@ def create_queue():
                 print(f"[QUEUES] Keeping main_queue as-is: '{main_queue}'")
 
         # Reject attempts to use a subqueue name as the main_queue (e.g., frontend fallback used subqueue of the same name)
+        # BUT explicitly ALLOW this if the name matches a known queue in the database (matched_queue_id is not None)
         if name and main_queue and name == main_queue and looks_like_subqueue:
-            print(f"[QUEUES] Refusing to treat subqueue name as main_queue: name={name}")
-            cur.close()
-            conn.close()
-            return (
-                jsonify(
-                    {
-                        "success": False,
-                        "error": "Invalid request: provided queue name looks like a subqueue. Provide the main_queue (country) separately.",
-                    }
-                ),
-                400,
-            )
+            if matched_queue_id:
+                print(f"[QUEUES] Allowed complex main_queue name because it is validated in DB: '{name}'")
+            else:
+                print(f"[QUEUES] Refusing to treat subqueue name as main_queue: name={name}")
+                cur.close()
+                conn.close()
+                return (
+                    jsonify(
+                        {
+                            "success": False,
+                            "error": "Invalid request: provided queue name looks like a subqueue. Provide the main_queue (country) separately.",
+                        }
+                    ),
+                    400,
+                )
 
         # If the payload appears to be describing a subqueue (name contains -) ensure main_queue is provided
         if looks_like_subqueue and not main_queue:
