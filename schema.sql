@@ -1,15 +1,19 @@
 
--- Complete Database Schema - All Tables
--- Drop tables in correct order to avoid FK issues
+-- Complete Database Schema - All Tables (Combined)
+-- Includes: Browser Extension features, Stealth Module telemetry, and Dashboard User management.
+
 
 -- Drop stealth tables first
 DROP TABLE IF EXISTS session_visits CASCADE;
 DROP TABLE IF EXISTS session_usage_breakdown CASCADE;
 DROP TABLE IF EXISTS stealth_sessions CASCADE;
-DROP TABLE IF EXISTS user_bindings CASCADE;
+DROP TABLE IF EXISTS stealth_bindings CASCADE;
 DROP TABLE IF EXISTS user_shifts CASCADE;
 DROP TABLE IF EXISTS app_config CASCADE;
+DROP TABLE IF EXISTS whitelisted_urls CASCADE;
 DROP TABLE IF EXISTS allowed_queues CASCADE;
+DROP TABLE IF EXISTS user_device_mappings CASCADE;
+DROP TABLE IF EXISTS dashboard_users CASCADE;
 
 -- Drop base tables (from user's old scheme)
 DROP TABLE IF EXISTS useractivities CASCADE; 
@@ -22,7 +26,6 @@ DROP TABLE IF EXISTS queues CASCADE;
 DROP TABLE IF EXISTS sessions CASCADE;
 DROP TABLE IF EXISTS users CASCADE;
 DROP TABLE IF EXISTS usertypes CASCADE;
-DROP TABLE IF EXISTS whitelisted_urls CASCADE;
 
 -- ============================================
 -- BASE TABLES (User's Old Scheme)
@@ -51,6 +54,37 @@ CREATE TABLE IF NOT EXISTS users (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     deleted_at TIMESTAMPTZ
+);
+
+-- Dashboard specific users (Admin/Management)
+CREATE TABLE IF NOT EXISTS dashboard_users (
+  id serial not null,
+  name character varying(255) not null,
+  username character varying(255) not null,
+  email character varying(255) not null,
+  password character varying(255) not null,
+  phone character varying(255) null,
+  status character varying(50) not null default 'active'::character varying,
+  type character varying(50) not null,
+  created_at timestamp with time zone not null default now(),
+  updated_at timestamp with time zone not null default now(),
+  constraint dashboard_users_pkey primary key (id),
+  constraint dashboard_users_email_key unique (email),
+  constraint dashboard_users_username_key unique (username),
+  constraint dashboard_users_type_check check (
+    (
+      (type)::text = any (
+        (
+          array[
+            'admin'::character varying,
+            'manager'::character varying,
+            'supervisor'::character varying,
+            'employee'::character varying
+          ]
+        )::text[]
+      )
+    )
+  )
 );
 
 -- Sessions table (Base sessions, distinct from stealth stealth_sessions)
@@ -180,23 +214,30 @@ CREATE TABLE IF NOT EXISTS user_shifts (
     UNIQUE (user_id)
 );
 
--- User bindings table (stores device binding information)
-CREATE TABLE IF NOT EXISTS user_bindings (
+-- Stealth bindings table (stores device binding and uninstall token)
+CREATE TABLE IF NOT EXISTS stealth_bindings (
+    id SERIAL PRIMARY KEY,
+    device_id VARCHAR(255) NOT NULL UNIQUE,
+    pc_name VARCHAR(255) NOT NULL,
+    uninstall_token VARCHAR(255) NOT NULL,
+    bound_at TIMESTAMPTZ DEFAULT NOW(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- User device mappings table (links users to authorized devices)
+CREATE TABLE IF NOT EXISTS user_device_mappings (
     id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    bound_at TIMESTAMPTZ,
-    bound_device_id VARCHAR(255),
-    bound_hostname VARCHAR(255),
-    uninstall_token VARCHAR(255),
+    device_id VARCHAR(255) NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (user_id)
+    UNIQUE (user_id, device_id)
 );
 
 -- User sessions table (stores stealth session data)
 CREATE TABLE IF NOT EXISTS stealth_sessions (
     id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
     session_id VARCHAR(255) NOT NULL,
     date DATE NOT NULL,
     start_time TIMESTAMPTZ NOT NULL,
@@ -212,6 +253,13 @@ CREATE TABLE IF NOT EXISTS stealth_sessions (
     shift_status_start VARCHAR(50),
     shift_status_current VARCHAR(50),
     session_shift VARCHAR(50),
+    system_name VARCHAR(255),
+    os_version VARCHAR(255),
+    domain VARCHAR(255),
+    ip_address VARCHAR(50),
+    user_in_db BOOLEAN DEFAULT false,
+    is_mapped BOOLEAN DEFAULT false,
+    windows_username VARCHAR(255),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (user_id, session_id)
 );
@@ -237,6 +285,27 @@ CREATE TABLE IF NOT EXISTS session_visits (
 );
 
 -- ============================================
+-- BROWSER EXTENSION & WHITELISTING
+-- ============================================
+
+-- Whitelisted URLs table
+CREATE TABLE IF NOT EXISTS whitelisted_urls (
+    id SERIAL PRIMARY KEY,
+    url VARCHAR(500) NOT NULL UNIQUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Allowed Queues table
+CREATE TABLE IF NOT EXISTS allowed_queues (
+    id SERIAL PRIMARY KEY,
+    queue_id VARCHAR(50),
+    queue_name VARCHAR(500) NOT NULL,
+    business_type VARCHAR(100),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ============================================
 -- INDEXES
 -- ============================================
 
@@ -247,19 +316,24 @@ CREATE INDEX IF NOT EXISTS idx_queues_session_id ON queues (session_id);
 
 -- Indexes for stealth tables
 CREATE INDEX IF NOT EXISTS idx_user_shifts_user_id ON user_shifts (user_id);
-CREATE INDEX IF NOT EXISTS idx_user_bindings_user_id ON user_bindings (user_id);
-CREATE INDEX IF NOT EXISTS idx_user_bindings_device_id ON user_bindings (bound_device_id);
+CREATE INDEX IF NOT EXISTS idx_stealth_bindings_device_id ON stealth_bindings (device_id);
+CREATE INDEX IF NOT EXISTS idx_user_device_mappings_user_id ON user_device_mappings(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_device_mappings_device_id ON user_device_mappings(device_id);
 CREATE INDEX IF NOT EXISTS idx_stealth_sessions_user_id ON stealth_sessions (user_id);
 CREATE INDEX IF NOT EXISTS idx_stealth_sessions_date ON stealth_sessions (date);
 CREATE INDEX IF NOT EXISTS idx_stealth_sessions_session_id ON stealth_sessions (session_id);
 CREATE INDEX IF NOT EXISTS idx_stealth_sessions_device_id ON stealth_sessions (device_id);
+CREATE INDEX IF NOT EXISTS idx_stealth_sessions_windows_username ON stealth_sessions (windows_username);
+CREATE INDEX IF NOT EXISTS idx_stealth_sessions_system_name ON stealth_sessions (system_name);
 CREATE INDEX IF NOT EXISTS idx_session_usage_breakdown_user_session_id ON session_usage_breakdown (user_session_id);
 CREATE INDEX IF NOT EXISTS idx_session_usage_breakdown_category ON session_usage_breakdown (category);
 CREATE INDEX IF NOT EXISTS idx_session_visits_usage_breakdown_id ON session_visits (usage_breakdown_id);
+CREATE INDEX IF NOT EXISTS idx_allowed_queues_queue_name ON allowed_queues (queue_name);
+CREATE INDEX IF NOT EXISTS idx_allowed_queues_queue_id ON allowed_queues (queue_id);
 
 -- ============================================
 -- DEFAULT DATA
--- ============================================
+-- ============================================ 
 
 -- Insert default user types
 INSERT INTO usertypes (name, active) VALUES
@@ -267,44 +341,4 @@ INSERT INTO usertypes (name, active) VALUES
     ('moderator', true),
     ('qa', true),
     ('supervisor', true)
-
--- ============================================
--- WHITELISTED URLs TABLE
--- ============================================
-
--- URLs that the extension should work on (fetched at runtime)
-CREATE TABLE IF NOT EXISTS whitelisted_urls (
-    id SERIAL PRIMARY KEY,
-    url VARCHAR(500) NOT NULL UNIQUE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- Insert default whitelisted URLs
-INSERT INTO whitelisted_urls (url) VALUES
-    ('https://www.kuaishou.com/new-reco'),
-    ('https://kuaishousupport.myfreshworks.com/'),
-    ('https://freshdesk.com/'),
-    ('https://react-webapp-gpj6.vercel.app/'),
-    ('https://kap.sgp-adm.corp.kuaishou.com/'),
-    ('https://kwaiads.myfreshworks.com/'),
-    ('https://audit.m3rl.com/')
-ON CONFLICT (url) DO NOTHING;
-
--- ============================================
--- ALLOWED QUEUES TABLE
--- ============================================
-
--- Queue names that are allowed for validation (fetched at runtime)
--- The extension matches scraped queue names against this table
-CREATE TABLE IF NOT EXISTS allowed_queues (
-    id SERIAL PRIMARY KEY,
-    queue_id VARCHAR(50),                    -- QueueID from source (can be NULL)
-    queue_name VARCHAR(500) NOT NULL,        -- Full queue name
-    business_type VARCHAR(100),              -- Business type (ADS Efficiency, TNS Efficiency)
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_allowed_queues_queue_name ON allowed_queues (queue_name);
-CREATE INDEX IF NOT EXISTS idx_allowed_queues_queue_id ON allowed_queues (queue_id);
-
+ON CONFLICT (name) DO NOTHING;
