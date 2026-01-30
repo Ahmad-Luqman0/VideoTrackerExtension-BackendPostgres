@@ -164,8 +164,8 @@ def register():
 
         try:
             # Hash the password using SHA-256 before storing
-            hashed_password = hashlib.sha256(password.encode('utf-8')).hexdigest()
-            
+            hashed_password = hashlib.sha256(password.encode("utf-8")).hexdigest()
+
             cur.execute(
                 "INSERT INTO users (name, email, password, phone, usertype_id) VALUES (%s, %s, %s, %s, %s) RETURNING id",
                 (name, email, hashed_password, phone, user_type_id),
@@ -277,7 +277,7 @@ def login():
         )
         row = cur.fetchone()
         print(f"[LOGIN] Query result: {row}")
-        
+
         if not row:
             cur.close()
             conn.close()
@@ -286,11 +286,11 @@ def login():
                 jsonify({"success": False, "error": "Invalid email or password."}),
                 401,
             )
-        
+
         # Verify the password using SHA-256 hash comparison
         stored_password = row["password"]
-        hashed_input_password = hashlib.sha256(password.encode('utf-8')).hexdigest()
-        
+        hashed_input_password = hashlib.sha256(password.encode("utf-8")).hexdigest()
+
         if hashed_input_password != stored_password:
             cur.close()
             conn.close()
@@ -734,61 +734,63 @@ def create_queue():
         - If SINGLE partial match found: (True, full_allowed_name) - normalize to full name
         - If MULTIPLE partial matches found: (True, original_queue_name) - keep as-is
         - If no match: (False, None)
-        
+
         Simple country names (without dashes) are kept as-is if they match.
         """
         if not queue_name:
             return False, None, None
-        
+
         input_lower = queue_name.strip().lower()
-        
+
         # First, check for exact match (case-insensitive)
         for allowed_name, _, allowed_qid in allowed_queues:
             if allowed_name.lower() == input_lower:
                 return True, allowed_name, allowed_qid
-        
+
         # Check if input is a simple country name (no special chars like - or /)
         # If it matches a country entry, keep as-is
         is_simple_name = not re.search(r"[-_/]", queue_name)
         if is_simple_name:
             for allowed_name, business_type, allowed_qid in allowed_queues:
-                if business_type == 'COUNTRY' and allowed_name.lower() == input_lower:
+                if business_type == "COUNTRY" and allowed_name.lower() == input_lower:
                     return True, allowed_name, allowed_qid
-        
+
         # For partial queue names, find all matching full names
         # The input should be a prefix of the allowed name
         if not is_simple_name:
             matches = []
             for allowed_name, business_type, allowed_qid in allowed_queues:
-                if business_type == 'COUNTRY':
+                if business_type == "COUNTRY":
                     continue  # Skip country entries for partial matching
                 allowed_lower = allowed_name.lower()
                 # Check if input is a prefix of allowed name (partial match)
                 if allowed_lower.startswith(input_lower):
                     matches.append((allowed_name, allowed_qid))
-            
+
             if len(matches) == 1:
                 # Single match - normalize to the full name
-                print(f"[QUEUES] Single match found: '{queue_name}' -> '{matches[0][0]}'")
+                print(
+                    f"[QUEUES] Single match found: '{queue_name}' -> '{matches[0][0]}'"
+                )
                 return True, matches[0][0], matches[0][1]
             elif len(matches) > 1:
                 # Multiple matches - keep the original scraped value as-is
-                print(f"[QUEUES] Multiple matches found for '{queue_name}': {len(matches)} options - keeping as-is")
+                print(
+                    f"[QUEUES] Multiple matches found for '{queue_name}': {len(matches)} options - keeping as-is"
+                )
                 return True, queue_name, None
-        
+
         return False, None, None
 
     try:
         conn = get_conn()
         cur = conn.cursor()
-        
+
         # Fetch allowed queues from database
-        cur.execute(
-            "SELECT queue_name, business_type, queue_id FROM allowed_queues"
-        )
+        cur.execute("SELECT queue_name, business_type, queue_id FROM allowed_queues")
         allowed_queues = [(row[0], row[1], row[2]) for row in cur.fetchall()]
         print(f"[QUEUES] Loaded {len(allowed_queues)} allowed queues from database")
-        
+
         # If a subqueue-like name is provided (contains dash or special tokens) then a main_queue must be present
         looks_like_subqueue = bool(name and re.search(r"[-_/]", name))
 
@@ -810,9 +812,13 @@ def create_queue():
         # Normalize main_queue if a match is found in DB (don't reject if not found)
         if main_queue:
             # We don't store main_queue's ID separately, so ignore qid result here
-            is_valid, normalized_main, _ = find_matching_queue(main_queue, allowed_queues)
+            is_valid, normalized_main, _ = find_matching_queue(
+                main_queue, allowed_queues
+            )
             if is_valid and normalized_main and normalized_main != main_queue:
-                print(f"[QUEUES] Normalizing main_queue: '{main_queue}' -> '{normalized_main}'")
+                print(
+                    f"[QUEUES] Normalizing main_queue: '{main_queue}' -> '{normalized_main}'"
+                )
                 main_queue = normalized_main
             else:
                 print(f"[QUEUES] Keeping main_queue as-is: '{main_queue}'")
@@ -821,9 +827,13 @@ def create_queue():
         # BUT explicitly ALLOW this if the name matches a known queue in the database (matched_queue_id is not None)
         if name and main_queue and name == main_queue and looks_like_subqueue:
             if matched_queue_id:
-                print(f"[QUEUES] Allowed complex main_queue name because it is validated in DB: '{name}'")
+                print(
+                    f"[QUEUES] Allowed complex main_queue name because it is validated in DB: '{name}'"
+                )
             else:
-                print(f"[QUEUES] Refusing to treat subqueue name as main_queue: name={name}")
+                print(
+                    f"[QUEUES] Refusing to treat subqueue name as main_queue: name={name}"
+                )
                 cur.close()
                 conn.close()
                 return (
@@ -872,9 +882,11 @@ def create_queue():
                     main_id = mrow[0]
                     existing_subqueues = mrow[1]
                     existing_subcounts = mrow[2]
-                    
-                    print(f"[QUEUES] Read existing data: subqueues={existing_subqueues} (type={type(existing_subqueues).__name__}), subqueue_counts={existing_subcounts} (type={type(existing_subcounts).__name__})")
-                    
+
+                    print(
+                        f"[QUEUES] Read existing data: subqueues={existing_subqueues} (type={type(existing_subqueues).__name__}), subqueue_counts={existing_subcounts} (type={type(existing_subcounts).__name__})"
+                    )
+
                     # Parse existing subqueues array - handle None, str, list, dict
                     if existing_subqueues is None:
                         existing_subqueues = []
@@ -887,7 +899,7 @@ def create_queue():
                         pass  # Already a list, keep as is
                     else:
                         existing_subqueues = []
-                    
+
                     # Parse existing subqueue_counts - handle None, str, dict
                     if existing_subcounts is None:
                         existing_subcounts = {}
@@ -900,8 +912,10 @@ def create_queue():
                         pass  # Already a dict, keep as is
                     else:
                         existing_subcounts = {}
-                    
-                    print(f"[QUEUES] After parsing: subqueues={existing_subqueues}, subqueue_counts={existing_subcounts}")
+
+                    print(
+                        f"[QUEUES] After parsing: subqueues={existing_subqueues}, subqueue_counts={existing_subcounts}"
+                    )
                 else:
                     # Create a main queue row if it doesn't exist
                     cur.execute(
@@ -933,14 +947,23 @@ def create_queue():
                 # MERGE the new subqueue into existing data (don't overwrite)
                 # Add/update this subqueue's count in subqueue_counts (preserves existing)
                 existing_subcounts[name] = sub_old
-                print(f"[QUEUES] After adding {name}={sub_old}: subqueue_counts={existing_subcounts}")
+                print(
+                    f"[QUEUES] After adding {name}={sub_old}: subqueue_counts={existing_subcounts}"
+                )
                 # Add to subqueues array if not already present
                 if name not in existing_subqueues:
                     existing_subqueues.append(name)
-                
+
                 cur.execute(
                     "UPDATE queues SET subqueues = %s, subqueue_counts = %s, selected_subqueue = %s, subqueue_count_old = %s, subqueue_count_new = %s, updated_at = NOW() WHERE id = %s",
-                    (json.dumps(existing_subqueues), json.dumps(existing_subcounts), name, sub_old, None, main_id),
+                    (
+                        json.dumps(existing_subqueues),
+                        json.dumps(existing_subcounts),
+                        name,
+                        sub_old,
+                        None,
+                        main_id,
+                    ),
                 )
                 conn.commit()
                 cur.close()
@@ -1151,8 +1174,10 @@ def _adjust_queue_counts(cur, queue_id, metadata, delta=1):
     existing_queue_count_new = row[6]
     existing_subqueue_count_old = row[7]
     existing_subqueue_count_new = row[8]
-    
-    print(f"[_adjust_queue_counts] Read queue {queue_id}: sub_counts_json={sub_counts_json} (type={type(sub_counts_json).__name__})")
+
+    print(
+        f"[_adjust_queue_counts] Read queue {queue_id}: sub_counts_json={sub_counts_json} (type={type(sub_counts_json).__name__})"
+    )
 
     # Parse sub_counts - handle None, dict, str
     if sub_counts_json is None:
@@ -1166,7 +1191,7 @@ def _adjust_queue_counts(cur, queue_id, metadata, delta=1):
             sub_counts = {}
     else:
         sub_counts = {}
-    
+
     print(f"[_adjust_queue_counts] After parsing: sub_counts={sub_counts}")
 
     # preserve old values
@@ -1272,7 +1297,6 @@ def _adjust_queue_counts(cur, queue_id, metadata, delta=1):
             # Set selected_subname so downstream logic treats it as adjusted
             selected_subname = existing_selected
 
-
     try:
         # Also maintain the `subqueues` array column (list of subqueue names) for easier display
         subqueues_list = list(sub_counts.keys())
@@ -1316,7 +1340,9 @@ def _adjust_queue_counts(cur, queue_id, metadata, delta=1):
             else existing_subqueue_count_new
         )
 
-        print(f"[_adjust_queue_counts] WRITING to queue {queue_id}: sub_counts={sub_counts}")
+        print(
+            f"[_adjust_queue_counts] WRITING to queue {queue_id}: sub_counts={sub_counts}"
+        )
         cur.execute(
             "UPDATE queues SET main_queue_count = %s, subqueue_counts = %s, selected_subqueue = %s, queue_count_old = %s, queue_count_new = %s, subqueue_count_old = %s, subqueue_count_new = %s, updated_at = NOW() WHERE id = %s",
             (
@@ -1597,6 +1623,44 @@ def add_cards_bulk():
             ),
             500,
         )
+
+
+@app.route("/get-client-info", methods=["GET"])
+def get_client_info():
+    """
+    Get client information from request headers
+    Returns PC name, username if detectable from headers
+    """
+    try:
+        # Get IP and user agent
+        ip = request.headers.get("X-Forwarded-For", request.remote_addr)
+        user_agent = request.headers.get("User-Agent", "")
+
+        # Try to extract hostname from headers (some proxies send this)
+        hostname = request.headers.get("X-Forwarded-Host") or request.headers.get(
+            "Host"
+        )
+
+        # Try to get username from various headers
+        username = None
+        # Some corporate networks send username in headers
+        if "X-Authenticated-User" in request.headers:
+            username = request.headers.get("X-Authenticated-User")
+        elif "Remote-User" in request.headers:
+            username = request.headers.get("Remote-User")
+
+        return jsonify(
+            {
+                "success": True,
+                "ip": ip,
+                "user_agent": user_agent,
+                "hostname": hostname,
+                "username": username,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 if __name__ == "__main__":
