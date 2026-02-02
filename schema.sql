@@ -2,6 +2,7 @@
 -- Complete Database Schema - All Tables (Combined)
 -- Includes: Browser Extension features, Stealth Module telemetry, and Dashboard User management.
 
+-- Drop tables in correct order to avoid FK issues
 
 -- Drop stealth tables first
 DROP TABLE IF EXISTS session_visits CASCADE;
@@ -12,7 +13,6 @@ DROP TABLE IF EXISTS user_shifts CASCADE;
 DROP TABLE IF EXISTS app_config CASCADE;
 DROP TABLE IF EXISTS whitelisted_urls CASCADE;
 DROP TABLE IF EXISTS allowed_queues CASCADE;
-DROP TABLE IF EXISTS user_device_mappings CASCADE;
 DROP TABLE IF EXISTS dashboard_users CASCADE;
 
 -- Drop base tables (from user's old scheme)
@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     endtime TIMESTAMPTZ,
     duration NUMERIC,
     total_videos_watched INTEGER DEFAULT 0,
+    ip_address VARCHAR(45),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -225,13 +226,23 @@ CREATE TABLE IF NOT EXISTS stealth_bindings (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- User device mappings table (links users to authorized devices)
+-- User-Device mappings table (tracks which devices are mapped to which users)
 CREATE TABLE IF NOT EXISTS user_device_mappings (
     id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     device_id VARCHAR(255) NOT NULL,
+    ip_address VARCHAR(50),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (user_id, device_id)
+);
+
+-- Windows Username Mappings (maps Windows usernames to registered users)
+CREATE TABLE IF NOT EXISTS windows_username_mappings (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    windows_username VARCHAR(255) NOT NULL UNIQUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- User sessions table (stores stealth session data)
@@ -258,7 +269,6 @@ CREATE TABLE IF NOT EXISTS stealth_sessions (
     domain VARCHAR(255),
     ip_address VARCHAR(50),
     user_in_db BOOLEAN DEFAULT false,
-    is_mapped BOOLEAN DEFAULT false,
     windows_username VARCHAR(255),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (user_id, session_id)
@@ -317,8 +327,10 @@ CREATE INDEX IF NOT EXISTS idx_queues_session_id ON queues (session_id);
 -- Indexes for stealth tables
 CREATE INDEX IF NOT EXISTS idx_user_shifts_user_id ON user_shifts (user_id);
 CREATE INDEX IF NOT EXISTS idx_stealth_bindings_device_id ON stealth_bindings (device_id);
-CREATE INDEX IF NOT EXISTS idx_user_device_mappings_user_id ON user_device_mappings(user_id);
-CREATE INDEX IF NOT EXISTS idx_user_device_mappings_device_id ON user_device_mappings(device_id);
+CREATE INDEX IF NOT EXISTS idx_user_device_mappings_user_id ON user_device_mappings (user_id);
+CREATE INDEX IF NOT EXISTS idx_user_device_mappings_device_id ON user_device_mappings (device_id);
+CREATE INDEX IF NOT EXISTS idx_windows_username_mappings_windows_username ON windows_username_mappings (windows_username);
+CREATE INDEX IF NOT EXISTS idx_windows_username_mappings_user_id ON windows_username_mappings (user_id);
 CREATE INDEX IF NOT EXISTS idx_stealth_sessions_user_id ON stealth_sessions (user_id);
 CREATE INDEX IF NOT EXISTS idx_stealth_sessions_date ON stealth_sessions (date);
 CREATE INDEX IF NOT EXISTS idx_stealth_sessions_session_id ON stealth_sessions (session_id);
