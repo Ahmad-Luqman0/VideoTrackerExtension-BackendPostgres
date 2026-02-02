@@ -262,6 +262,7 @@ def login():
     data = request.json
     email = data.get("email")
     password = data.get("password")
+    ip_address = data.get("ip_address")  # Get IP address from request
     print("[LOGIN] Incoming data:", data)
 
     try:
@@ -303,10 +304,13 @@ def login():
         user_id = row["id"]
         session_id = generate_session_id()
         starttime = datetime.now(timezone.utc)
+
+        # Insert session with IP address
         cur.execute(
-            "INSERT INTO sessions (id, user_id, starttime) VALUES (%s, %s, %s)",
-            (session_id, user_id, starttime),
+            "INSERT INTO sessions (id, user_id, starttime, ip_address) VALUES (%s, %s, %s, %s)",
+            (session_id, user_id, starttime, ip_address),
         )
+
         # Log login activity
         cur.execute(
             "INSERT INTO useractivities (userid, activitytype, timestamp, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)",
@@ -315,7 +319,9 @@ def login():
         conn.commit()
         cur.close()
         conn.close()
-        print(f"[LOGIN] Success: user_id={user_id}, session_id={session_id}")
+        print(
+            f"[LOGIN] Success: user_id={user_id}, session_id={session_id}, ip={ip_address}"
+        )
         return jsonify({"success": True, "session_id": session_id})
     except Exception as e:
         import traceback
@@ -1632,14 +1638,25 @@ def get_client_info():
     Returns PC name, username if detectable from headers
     """
     try:
+        import socket
+
         # Get IP and user agent
         ip = request.headers.get("X-Forwarded-For", request.remote_addr)
+        if "," in str(ip):
+            ip = ip.split(",")[0].strip()  # Get first IP if multiple
+
         user_agent = request.headers.get("User-Agent", "")
 
-        # Try to extract hostname from headers (some proxies send this)
-        hostname = request.headers.get("X-Forwarded-Host") or request.headers.get(
-            "Host"
-        )
+        # Try reverse DNS lookup to get hostname from IP
+        hostname = None
+        try:
+            hostname_result = socket.gethostbyaddr(ip)
+            hostname = hostname_result[0] if hostname_result else None
+        except:
+            # Reverse DNS failed, try headers
+            hostname = request.headers.get("X-Forwarded-Host") or request.headers.get(
+                "Host"
+            )
 
         # Try to get username from various headers
         username = None
