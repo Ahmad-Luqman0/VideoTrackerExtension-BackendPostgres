@@ -303,9 +303,15 @@ def login():
         user_id = row["id"]
         session_id = generate_session_id()
         starttime = datetime.now(timezone.utc)
+        
+        # Get client IP address
+        ip_address = request.headers.get('X-Forwarded-For', request.remote_addr)
+        if ip_address and ',' in ip_address:
+            ip_address = ip_address.split(',')[0].strip()
+        
         cur.execute(
-            "INSERT INTO sessions (id, user_id, starttime) VALUES (%s, %s, %s)",
-            (session_id, user_id, starttime),
+            "INSERT INTO sessions (id, user_id, starttime, ip_address) VALUES (%s, %s, %s, %s)",
+            (session_id, user_id, starttime, ip_address),
         )
         # Log login activity
         cur.execute(
