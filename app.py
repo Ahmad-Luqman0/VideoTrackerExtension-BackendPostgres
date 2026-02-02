@@ -290,8 +290,17 @@ def auto_session():
             # Race condition detected - return the existing recent session
             existing_session_id = existing_session[0]
             existing_user_id = existing_session[1]
+            
+            # Fetch user name if user_id exists
+            user_name = None
+            if existing_user_id:
+                cur.execute("SELECT name FROM users WHERE id = %s", (existing_user_id,))
+                user_result = cur.fetchone()
+                if user_result:
+                    user_name = user_result[0]
+            
             print(f"[AUTO_SESSION] ⚠️ RACE CONDITION PREVENTED: Returning existing session created {(datetime.now(timezone.utc) - existing_session[3]).total_seconds():.2f}s ago")
-            print(f"[AUTO_SESSION] Reusing session_id={existing_session_id}, user_id={existing_user_id}, ip={ip_address}")
+            print(f"[AUTO_SESSION] Reusing session_id={existing_session_id}, user_id={existing_user_id}, user_name={user_name}, ip={ip_address}")
             
             cur.close()
             conn.close()
@@ -300,6 +309,7 @@ def auto_session():
                 "success": True, 
                 "session_id": existing_session_id,
                 "user_id": existing_user_id,
+                "user_name": user_name,  # NEW: Return user name
                 "ip_address": ip_address,
                 "reused": True  # Flag to indicate this was a race condition prevention
             })
@@ -315,9 +325,17 @@ def auto_session():
         result = cur.fetchone()
         
         user_id = None
+        user_name = None
         if result:
             user_id = result[0]
             print(f"[AUTO_SESSION] Found matching user_id: {user_id} for IP: {ip_address}")
+            
+            # Fetch user name from users table
+            cur.execute("SELECT name FROM users WHERE id = %s", (user_id,))
+            user_result = cur.fetchone()
+            if user_result:
+                user_name = user_result[0]
+                print(f"[AUTO_SESSION] User name: {user_name}")
         else:
             print(f"[AUTO_SESSION] No matching user found for IP: {ip_address}, creating session with NULL user_id")
         
@@ -342,11 +360,12 @@ def auto_session():
         cur.close()
         conn.close()
         
-        print(f"[AUTO_SESSION] ✓ NEW SESSION CREATED: session_id={session_id}, user_id={user_id}, ip={ip_address}")
+        print(f"[AUTO_SESSION] ✓ NEW SESSION CREATED: session_id={session_id}, user_id={user_id}, user_name={user_name}, ip={ip_address}")
         return jsonify({
             "success": True, 
             "session_id": session_id,
             "user_id": user_id,
+            "user_name": user_name,  # NEW: Return user name
             "ip_address": ip_address,
             "reused": False  # Flag to indicate this was a new session
         })
