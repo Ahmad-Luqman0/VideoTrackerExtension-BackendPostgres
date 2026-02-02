@@ -260,11 +260,6 @@ def get_allowed_queues():
 # --- AUTO SESSION (create session based on IP matching, no login required) ---
 @app.route("/auto_session", methods=["POST"])
 def auto_session():
-    """
-    Create a session automatically based on IP address.
-    If IP matches a user in user_device_mappings, link to that user_id.
-    Otherwise, create session with NULL user_id but store the IP.
-    """
     print("[AUTO_SESSION] Request received")
     
     try:
@@ -277,6 +272,40 @@ def auto_session():
             ip_address = ip_address.split(',')[0].strip()
         
         print(f"[AUTO_SESSION] Client IP: {ip_address}")
+        
+        cur.execute(
+            """
+            SELECT id, user_id, ip_address, starttime, created_at 
+            FROM sessions 
+            WHERE ip_address = %s 
+              AND starttime > NOW() - INTERVAL '5 seconds'
+            ORDER BY starttime DESC 
+            LIMIT 1
+            """,
+            (ip_address,)
+        )
+        existing_session = cur.fetchone()
+        
+        if existing_session:
+            # Race condition detected - return the existing recent session
+            existing_session_id = existing_session[0]
+            existing_user_id = existing_session[1]
+            print(f"[AUTO_SESSION] ⚠️ RACE CONDITION PREVENTED: Returning existing session created {(datetime.now(timezone.utc) - existing_session[3]).total_seconds():.2f}s ago")
+            print(f"[AUTO_SESSION] Reusing session_id={existing_session_id}, user_id={existing_user_id}, ip={ip_address}")
+            
+            cur.close()
+            conn.close()
+            
+            return jsonify({
+                "success": True, 
+                "session_id": existing_session_id,
+                "user_id": existing_user_id,
+                "ip_address": ip_address,
+                "reused": True  # Flag to indicate this was a race condition prevention
+            })
+        
+        # No recent session found - safe to create new one
+        print(f"[AUTO_SESSION] No recent session found, creating new session")
         
         # Try to find user_id from user_device_mappings using IP
         cur.execute(
@@ -313,12 +342,13 @@ def auto_session():
         cur.close()
         conn.close()
         
-        print(f"[AUTO_SESSION] Success: session_id={session_id}, user_id={user_id}, ip={ip_address}")
+        print(f"[AUTO_SESSION] ✓ NEW SESSION CREATED: session_id={session_id}, user_id={user_id}, ip={ip_address}")
         return jsonify({
             "success": True, 
             "session_id": session_id,
             "user_id": user_id,
-            "ip_address": ip_address
+            "ip_address": ip_address,
+            "reused": False  # Flag to indicate this was a new session
         })
         
     except Exception as e:
@@ -409,9 +439,6 @@ def log_video():
         print("[LOG_VIDEO] ERROR: Missing session_id")
         return jsonify({"success": False, "error": "Missing session_id"}), 400
 
-    # Session ID is now a string, no need to convert to ObjectId
-
-    # Handle keys - if null/None, keep as empty list for processing
     keys = data.get("keys")
     if keys is None:
         keys = []
