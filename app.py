@@ -309,6 +309,8 @@ def login():
         if ip_address and ',' in ip_address:
             ip_address = ip_address.split(',')[0].strip()
         
+        print(f"[LOGIN] User {email} logging in from IP: {ip_address}")
+        
         cur.execute(
             "INSERT INTO sessions (id, user_id, starttime, ip_address) VALUES (%s, %s, %s, %s)",
             (session_id, user_id, starttime, ip_address),
