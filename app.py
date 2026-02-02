@@ -257,88 +257,87 @@ def get_allowed_queues():
 
 
 # --- LOGIN (create new session for the user, log to UserActivities) ---
-@app.route("/login", methods=["POST"])
-def login():
-    data = request.json
-    email = data.get("email")
-    password = data.get("password")
-    print("[LOGIN] Incoming data:", data)
-
+# --- AUTO SESSION (create session based on IP matching, no login required) ---
+@app.route("/auto_session", methods=["POST"])
+def auto_session():
+    """
+    Create a session automatically based on IP address.
+    If IP matches a user in user_device_mappings, link to that user_id.
+    Otherwise, create session with NULL user_id but store the IP.
+    """
+    print("[AUTO_SESSION] Request received")
+    
     try:
         conn = get_conn()
-        cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-        print(
-            f"[LOGIN] Executing: SELECT id, password FROM users WHERE email = %s with email={email}"
-        )
-        # First, get the user by email only
-        cur.execute(
-            "SELECT id, password FROM users WHERE email = %s",
-            (email,),
-        )
-        row = cur.fetchone()
-        print(f"[LOGIN] Query result: {row}")
-        
-        if not row:
-            cur.close()
-            conn.close()
-            print(f"[LOGIN] User not found for email={email}")
-            return (
-                jsonify({"success": False, "error": "Invalid email or password."}),
-                401,
-            )
-        
-        # Verify the password using SHA-256 hash comparison
-        stored_password = row["password"]
-        hashed_input_password = hashlib.sha256(password.encode('utf-8')).hexdigest()
-        
-        if hashed_input_password != stored_password:
-            cur.close()
-            conn.close()
-            print(f"[LOGIN] Invalid password for email={email}")
-            return (
-                jsonify({"success": False, "error": "Invalid email or password."}),
-                401,
-            )
-
-        user_id = row["id"]
-        session_id = generate_session_id()
-        starttime = datetime.now(timezone.utc)
+        cur = conn.cursor()
         
         # Get client IP address
         ip_address = request.headers.get('X-Forwarded-For', request.remote_addr)
         if ip_address and ',' in ip_address:
             ip_address = ip_address.split(',')[0].strip()
         
-        print(f"[LOGIN] User {email} logging in from IP: {ip_address}")
+        print(f"[AUTO_SESSION] Client IP: {ip_address}")
         
+        # Try to find user_id from user_device_mappings using IP
+        cur.execute(
+            "SELECT user_id FROM user_device_mappings WHERE ip_address = %s LIMIT 1",
+            (ip_address,)
+        )
+        result = cur.fetchone()
+        
+        user_id = None
+        if result:
+            user_id = result[0]
+            print(f"[AUTO_SESSION] Found matching user_id: {user_id} for IP: {ip_address}")
+        else:
+            print(f"[AUTO_SESSION] No matching user found for IP: {ip_address}, creating session with NULL user_id")
+        
+        # Generate session
+        session_id = generate_session_id()
+        starttime = datetime.now(timezone.utc)
+        
+        # Insert session (user_id can be NULL)
         cur.execute(
             "INSERT INTO sessions (id, user_id, starttime, ip_address) VALUES (%s, %s, %s, %s)",
             (session_id, user_id, starttime, ip_address),
         )
-        # Log login activity
-        cur.execute(
-            "INSERT INTO useractivities (userid, activitytype, timestamp, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)",
-            (user_id, "login", starttime, starttime, starttime),
-        )
+        
+        # Log activity if user_id is found
+        if user_id:
+            cur.execute(
+                "INSERT INTO useractivities (userid, activitytype, timestamp, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)",
+                (user_id, "auto_session_start", starttime, starttime, starttime),
+            )
+        
         conn.commit()
         cur.close()
         conn.close()
-        print(f"[LOGIN] Success: user_id={user_id}, session_id={session_id}")
-        return jsonify({"success": True, "session_id": session_id})
+        
+        print(f"[AUTO_SESSION] Success: session_id={session_id}, user_id={user_id}, ip={ip_address}")
+        return jsonify({
+            "success": True, 
+            "session_id": session_id,
+            "user_id": user_id,
+            "ip_address": ip_address
+        })
+        
     except Exception as e:
         import traceback
-
-        print("[LOGIN] Exception:", str(e))
+        print("[AUTO_SESSION] Exception:", str(e))
         traceback.print_exc()
         return (
-            jsonify({"success": False, "error": "Login failed", "detail": str(e)}),
+            jsonify({"success": False, "error": "Auto session failed", "detail": str(e)}),
             500,
         )
 
 
-# --- LOGOUT (set endtime + duration on last session, log to UserActivities) ---
-@app.route("/logout", methods=["POST"])
-def logout():
+# --- END SESSION (set endtime + duration on session when tab closes) ---
+@app.route("/end_session", methods=["POST"])
+def end_session():
+    """
+    End a session when the tab is closed.
+    Works for both user-linked and anonymous sessions.
+    """
     data = request.json
     session_id = data.get("session_id")
     if not session_id:
@@ -357,7 +356,7 @@ def logout():
             conn.close()
             return jsonify({"success": False, "error": "Session not found"}), 404
 
-        user_id = row[0]
+        user_id = row[0]  # Can be NULL for anonymous sessions
         starttime = row[1]
         total_videos = row[2]
         endtime = datetime.now(timezone.utc)
@@ -369,11 +368,14 @@ def logout():
             "UPDATE sessions SET endtime = %s, duration = %s WHERE id = %s",
             (endtime, duration, session_id),
         )
-        # Log logout activity
-        cur.execute(
-            "INSERT INTO useractivities (userid, activitytype, timestamp, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)",
-            (user_id, "logout", endtime, endtime, endtime),
-        )
+        
+        # Log activity only if user_id exists
+        if user_id:
+            cur.execute(
+                "INSERT INTO useractivities (userid, activitytype, timestamp, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)",
+                (user_id, "session_end", endtime, endtime, endtime),
+            )
+        
         conn.commit()
         cur.close()
         conn.close()
@@ -388,7 +390,7 @@ def logout():
         )
     except Exception as e:
         return (
-            jsonify({"success": False, "error": "Logout failed", "detail": str(e)}),
+            jsonify({"success": False, "error": "End session failed", "detail": str(e)}),
             500,
         )
 
