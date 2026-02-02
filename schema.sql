@@ -1,10 +1,4 @@
 
--- Complete Database Schema - All Tables (Combined)
--- Includes: Browser Extension features, Stealth Module telemetry, and Dashboard User management.
-
--- Drop tables in correct order to avoid FK issues
-
--- Drop stealth tables first
 DROP TABLE IF EXISTS session_visits CASCADE;
 DROP TABLE IF EXISTS session_usage_breakdown CASCADE;
 DROP TABLE IF EXISTS stealth_sessions CASCADE;
@@ -90,7 +84,7 @@ CREATE TABLE IF NOT EXISTS dashboard_users (
 -- Sessions table (Base sessions, distinct from stealth stealth_sessions)
 CREATE TABLE IF NOT EXISTS sessions (
     id VARCHAR PRIMARY KEY,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
     starttime TIMESTAMPTZ NOT NULL,
     endtime TIMESTAMPTZ,
     duration NUMERIC,
