@@ -1,4 +1,4 @@
-
+-- Drop stealth tables first
 DROP TABLE IF EXISTS session_visits CASCADE;
 DROP TABLE IF EXISTS session_usage_breakdown CASCADE;
 DROP TABLE IF EXISTS stealth_sessions CASCADE;
@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     duration NUMERIC,
     total_videos_watched INTEGER DEFAULT 0,
     ip_address VARCHAR(45),
+    win_username VARCHAR(255),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
